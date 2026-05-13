@@ -1,0 +1,53 @@
+version: 1
+
+proxy:
+  # Prefix for meta-tool names exposed to the model
+  tool_prefix: "meta"
+  # Max results returned by search
+  max_search_results: 8
+  # Warm up all servers at start instead of lazy init
+  warmup: false
+  # Kill idle subprocess after this duration (0 = never)
+  idle_ttl: 10m
+  # How long to cache tools/list from a backend
+  tool_cache_ttl: 30m
+  # Timeout for a single tool call
+  exec_timeout: 60s
+  # Max bytes of tool result returned to model (0 = unlimited)
+  max_result_bytes: 65536
+
+servers:
+  - name: mempalace
+    transport: stdio
+    command: /opt/mcp/venv/bin/python
+    args: ["-m", "mempalace.mcpserver", "--config", "/etc/mcp/mempalace.yaml"]
+    description: "Long-term memory: knowledge graph, semantic search, drawers"
+    tags: ["memory", "search", "knowledge-graph"]
+    env:
+      MEMPALACEPALACEPATH: /var/lib/mempalace
+    autostart: false
+    enabled: true
+    # Mark tools that need extra caution (will appear in describe_tool output)
+    dangerous_tools: []
+
+  - name: dav
+    transport: stdio
+    command: /usr/local/bin/dav-mcp
+    args: []
+    description: "Calendars and contacts via CalDAV/CardDAV"
+    tags: ["calendar", "contacts", "dav"]
+    env:
+      DAV_URL: https://dav.example.com
+      DAV_USERNAME: user
+      DAV_PASSWORD: secret
+    autostart: false
+    enabled: true
+
+  - name: notes
+    transport: stdio
+    command: /opt/mcp/venv/bin/python
+    args: ["/opt/mcp/mcp-notes.py"]
+    description: "Notes via Memos API: search and create"
+    tags: ["notes", "memos"]
+    autostart: false
+    enabled: true
