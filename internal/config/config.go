@@ -37,6 +37,17 @@ type ProxyConfig struct {
 	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
 	// CircuitBreaker isolates misbehaving backends.
 	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
+	// LogFile, if set, receives the same JSONL stream as stderr. Empty
+	// means stderr only. Parent directories are created on demand.
+	LogFile string `yaml:"log_file"`
+	// LogFileMaxMB is the rotation threshold for LogFile. Default: 50.
+	LogFileMaxMB int `yaml:"log_file_max_mb"`
+	// LogFileMaxBackups is how many rotated files to keep. Default: 7.
+	LogFileMaxBackups int `yaml:"log_file_max_backups"`
+	// LogFileMaxAgeDays is how long a rotated file is kept. Default: 30.
+	LogFileMaxAgeDays int `yaml:"log_file_max_age_days"`
+	// LogFileCompress gzips rotated files. Default: false.
+	LogFileCompress bool `yaml:"log_file_compress"`
 }
 
 // CircuitBreakerConfig controls per-backend failure isolation.
@@ -110,6 +121,15 @@ func (c *Config) defaults() {
 	}
 	if c.Proxy.CircuitBreaker.Cooldown <= 0 {
 		c.Proxy.CircuitBreaker.Cooldown = 30 * time.Second
+	}
+	if c.Proxy.LogFileMaxMB <= 0 {
+		c.Proxy.LogFileMaxMB = 50
+	}
+	if c.Proxy.LogFileMaxBackups <= 0 {
+		c.Proxy.LogFileMaxBackups = 7
+	}
+	if c.Proxy.LogFileMaxAgeDays <= 0 {
+		c.Proxy.LogFileMaxAgeDays = 30
 	}
 }
 

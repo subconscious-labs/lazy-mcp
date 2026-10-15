@@ -3,12 +3,16 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"flag"
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
+
+	"gopkg.in/natefinch/lumberjack.v2"
 
 	"github.com/nikita-popov/lazy-mcp/internal/broker"
 	"github.com/nikita-popov/lazy-mcp/internal/catalog"
@@ -21,12 +25,30 @@ func main() {
 	cfgPath := flag.String("config", "config.yaml", "path to config file")
 	flag.Parse()
 
-	log := logx.New(os.Stderr)
-
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "lazy-mcp: config: %v\n", err)
 		os.Exit(1)
+	}
+
+	var logSink logx.Sink
+	var logCloser io.Closer
+	if cfg.Proxy.LogFile != "" {
+		if err := os.MkdirAll(filepath.Dir(cfg.Proxy.LogFile), 0o755); err != nil {
+			fmt.Fprintf(os.Stderr, "lazy-mcp: create log dir: %v\n", err)
+			os.Exit(1)
+		}
+		logSink = &lumberjack.Logger{
+			Filename:   cfg.Proxy.LogFile,
+			MaxSize:    cfg.Proxy.LogFileMaxMB,
+			MaxBackups: cfg.Proxy.LogFileMaxBackups,
+			MaxAge:     cfg.Proxy.LogFileMaxAgeDays,
+			Compress:   cfg.Proxy.LogFileCompress,
+		}
+	}
+	log, logCloser := logx.NewWithFile(os.Stderr, logSink)
+	if logCloser != nil {
+		defer func() { _ = logCloser.Close() }()
 	}
 
 	var disabled []string

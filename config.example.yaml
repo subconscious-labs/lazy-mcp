@@ -38,6 +38,14 @@ proxy:
     failure_threshold: 5
     # How long to stay open before probing with a single request.
     cooldown: 30s
+  # If set, the same JSONL stream that goes to stderr is also written to
+  # this file (rotated by lumberjack). Empty = stderr only.
+  log_file: ""
+  # Rotation parameters, applied only when log_file is set.
+  log_file_max_mb: 50
+  log_file_max_backups: 7
+  log_file_max_age_days: 30
+  log_file_compress: false
 
 servers:
   - name: mempalace
