@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -89,7 +90,7 @@ func (h *Handlers) Search(ctx context.Context, args map[string]any) (string, err
 
 // callResult is the envelope returned by Call.
 type callResult struct {
-	Result     string `json:"result"`
+	Result     any    `json:"result"`
 	NextCursor string `json:"next_cursor,omitempty"`
 	HasMore    bool   `json:"has_more,omitempty"`
 	Page       int    `json:"page,omitempty"`
@@ -151,7 +152,7 @@ func (h *Handlers) callCursorNext(cursor string) (string, error) {
 	}
 
 	out := callResult{
-		Result:     page,
+		Result:     wrapResult(page),
 		NextCursor: nextCursor,
 		HasMore:    hasMore,
 	}
@@ -170,7 +171,7 @@ func (h *Handlers) buildResponse(raw string, pageSize, pageNum int) (string, err
 	if maxBytes > 0 && len(raw) > maxBytes && (pageSize <= 0 || pageSize > maxBytes) {
 		truncated := truncateBytes(raw, maxBytes)
 		out := callResult{
-			Result:    truncated,
+			Result:    wrapResult(truncated),
 			Truncated: true,
 			Hint:      fmt.Sprintf("result truncated at %d bytes; use page_size <= %d to paginate", maxBytes, maxBytes),
 		}
@@ -180,10 +181,12 @@ func (h *Handlers) buildResponse(raw string, pageSize, pageNum int) (string, err
 	// Normal pagination via PageStore.
 	firstPage, cursor, hasMore := h.pager.Store(raw, pageSize)
 	out := callResult{
-		Result:     firstPage,
+		Result:     wrapResult(firstPage),
 		NextCursor: cursor,
 		HasMore:    hasMore,
-		Page:       pageNum,
+	}
+	if hasMore {
+		out.Page = pageNum
 	}
 	b, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
@@ -326,4 +329,18 @@ func truncateBytes(s string, limit int) string {
 		cut--
 	}
 	return s[:cut] + "\n… [truncated]"
+}
+
+// wrapResult returns raw as json.RawMessage when it looks like a JSON
+// object or array, and as a plain string otherwise. This lets models
+// consume structured tool output directly instead of unescaping a
+// stringified JSON blob.
+func wrapResult(raw string) any {
+	trimmed := strings.TrimSpace(raw)
+	if len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') {
+		if json.Valid([]byte(trimmed)) {
+			return json.RawMessage(trimmed)
+		}
+	}
+	return raw
 }

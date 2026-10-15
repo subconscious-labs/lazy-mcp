@@ -169,7 +169,7 @@ func (s *Server) toolManifest(prefix string) []map[string]any {
 		},
 		{
 			"name":        prefix + "_call",
-			"description": "Call a backend tool by tool_ref (e.g. \"mempalace/mempalacekgquery\") or by server+tool. Pass arguments as an object.",
+			"description": "Call a backend tool by tool_ref (server/tool) or by server+tool. Returns {result, page?, has_more?, next_cursor?, truncated?, hint?}. result is embedded as a JSON object/array when the backend returned JSON, otherwise as a string. When has_more is true, pass next_cursor back to fetch the next page.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -177,6 +177,14 @@ func (s *Server) toolManifest(prefix string) []map[string]any {
 					"server":    map[string]any{"type": "string", "description": "Backend server name (alternative to tool_ref)"},
 					"tool":      map[string]any{"type": "string", "description": "Tool name (alternative to tool_ref)"},
 					"arguments": map[string]any{"type": "object", "description": "Tool arguments"},
+					"page_size": map[string]any{
+						"type":        "integer",
+						"description": "Max bytes per page (0 disables pagination for this call)",
+					},
+					"cursor": map[string]any{
+						"type":        "string",
+						"description": "Continue from a previous call's next_cursor",
+					},
 				},
 			},
 		},
