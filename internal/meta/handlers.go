@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"unicode/utf8"
 
 	"github.com/nikita-popov/lazy-mcp/internal/broker"
 	"github.com/nikita-popov/lazy-mcp/internal/catalog"
@@ -41,9 +42,10 @@ func (h *Handlers) Search(ctx context.Context, args map[string]any) (string, err
 		limit = int(l)
 	}
 
-	// Lazy refresh: if catalog is empty, try to refresh all servers.
-	if len(h.cat.Entries()) == 0 {
-		for _, srv := range h.cfg.EnabledServers() {
+	// Refresh only the servers whose cached tool list is stale (or missing).
+	// On a warm catalog this is a no-op.
+	for _, srv := range h.cfg.EnabledServers() {
+		if h.cat.ServerStale(srv.Name) {
 			if err := h.cat.RefreshServer(ctx, srv.Name); err != nil {
 				h.log.Warn("search: refresh failed", "server", srv.Name, "err", err)
 			}
@@ -160,7 +162,7 @@ func (h *Handlers) buildResponse(raw string, pageSize, pageNum int) (string, err
 
 	// Safety net: if raw exceeds hard limit AND pageSize is larger, truncate with hint.
 	if maxBytes > 0 && pageSize > maxBytes && len(raw) > maxBytes {
-		truncated := raw[:maxBytes]
+		truncated := truncateBytes(raw, maxBytes)
 		out := callResult{
 			Result:    truncated,
 			Truncated: true,
@@ -277,4 +279,18 @@ func splitRef(ref string) (server, tool string, err error) {
 		}
 	}
 	return "", "", fmt.Errorf("invalid tool_ref %q: expected server/tool", ref)
+}
+
+// truncateBytes caps s to at most max bytes without splitting a UTF-8 rune.
+// max <= 0 means no limit.
+func truncateBytes(s string, max int) string {
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	// Back off to a rune boundary so we don't emit a broken codepoint.
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "\n… [truncated]"
 }

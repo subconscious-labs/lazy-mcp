@@ -1,14 +1,8 @@
 package catalog
 
 import (
-	"encoding/json"
 	"strings"
 )
-
-// jsonUnmarshal is a thin alias to keep catalog.go clean.
-func jsonUnmarshal(data []byte, v any) error {
-	return json.Unmarshal(data, v)
-}
 
 // score returns a relevance score for query q against entry e.
 // Higher = more relevant. 0 = no match.

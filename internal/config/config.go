@@ -27,6 +27,9 @@ type ProxyConfig struct {
 	// CursorTTL is how long paged cursors are kept in memory between calls.
 	// Default: 5 minutes.
 	CursorTTL time.Duration `yaml:"cursor_ttl"`
+	// ShutdownTimeout is the grace period for in-flight requests on SIGINT/SIGTERM.
+	// Default: 5 seconds.
+	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
 }
 
 // ServerConfig describes a single stdio MCP backend.
@@ -74,6 +77,9 @@ func (c *Config) defaults() {
 	// user opts in explicitly via config or per-call page_size.
 	if c.Proxy.CursorTTL == 0 {
 		c.Proxy.CursorTTL = 5 * time.Minute
+	}
+	if c.Proxy.ShutdownTimeout == 0 {
+		c.Proxy.ShutdownTimeout = 5 * time.Second
 	}
 }
 

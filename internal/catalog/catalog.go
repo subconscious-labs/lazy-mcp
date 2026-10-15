@@ -3,9 +3,11 @@ package catalog
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/nikita-popov/lazy-mcp/internal/broker"
 	"github.com/nikita-popov/lazy-mcp/internal/config"
@@ -37,11 +39,17 @@ type Catalog struct {
 	log    *logx.Logger
 	mu     sync.RWMutex
 	entries []ToolEntry
+	lastRefresh map[string]time.Time // server name -> last successful refresh
 }
 
 // New creates a Catalog.
 func New(cfg *config.Config, brok *broker.Broker, log *logx.Logger) *Catalog {
-	return &Catalog{cfg: cfg, brok: brok, log: log}
+	return &Catalog{
+		cfg:         cfg,
+		brok:        brok,
+		log:         log,
+		lastRefresh: make(map[string]time.Time),
+	}
 }
 
 // WarmUp fetches tools from all enabled servers.
@@ -96,10 +104,28 @@ func (c *Catalog) RefreshServer(ctx context.Context, serverName string) error {
 		}
 	}
 	c.entries = append(kept, entries...)
+	c.lastRefresh[serverName] = time.Now()
 	c.mu.Unlock()
 
 	c.log.Info("catalog refreshed", "server", serverName, "tools", len(entries))
 	return nil
+}
+
+// ServerStale reports whether the cached tool list for serverName is older
+// than proxy.tool_cache_ttl. Servers that were never refreshed count as stale.
+// ttl <= 0 disables staleness entirely (cache never expires).
+func (c *Catalog) ServerStale(serverName string) bool {
+	ttl := c.cfg.Proxy.ToolCacheTTL
+	if ttl <= 0 {
+		return false
+	}
+	c.mu.RLock()
+	t, ok := c.lastRefresh[serverName]
+	c.mu.RUnlock()
+	if !ok {
+		return true
+	}
+	return time.Since(t) > ttl
 }
 
 // Search returns top-N scored hits for query.
@@ -168,7 +194,7 @@ func extractInputHint(schema []byte) string {
 		} `json:"properties"`
 		Required []string `json:"required"`
 	}
-	if err := jsonUnmarshal(schema, &s); err != nil {
+	if err := json.Unmarshal(schema, &s); err != nil {
 		return ""
 	}
 	var parts []string

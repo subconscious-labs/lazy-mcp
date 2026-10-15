@@ -32,36 +32,64 @@ func NewServer(cfg *config.Config, brok *broker.Broker, cat *catalog.Catalog, lo
 	}
 }
 
-// Run reads JSON-RPC from r and writes responses to w until ctx is done or EOF.
+// Run reads JSON-RPC from r and writes responses to w.
+// It returns when ctx is done, on EOF, or on a fatal encode error.
+//
+// stdin is read on a separate goroutine because bufio.Scanner.Scan blocks
+// and cannot observe ctx cancellation. The main loop selects on the reader
+// channel and ctx, so SIGTERM interrupts it promptly.
 func (s *Server) Run(ctx context.Context, r io.Reader, w io.Writer) error {
 	enc := json.NewEncoder(w)
-	scanner := bufio.NewScanner(r)
 
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
+	lines := make(chan string)
+	scanErr := make(chan error, 1) // buffered: reader never blocks on send
+	go func() {
+		defer close(lines)
+		scanner := bufio.NewScanner(r)
+		scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+		for scanner.Scan() {
+			select {
+			case lines <- scanner.Text():
+			case <-ctx.Done():
+				scanErr <- nil
+				return
+			}
 		}
-		var req struct {
-			JSONRPC string          `json:"jsonrpc"`
-			ID      any             `json:"id"`
-			Method  string          `json:"method"`
-			Params  json.RawMessage `json:"params"`
-		}
-		if err := json.Unmarshal([]byte(line), &req); err != nil {
-			s.log.Warn("parse error", "line", line)
-			continue
-		}
+		scanErr <- scanner.Err()
+	}()
 
-		s.log.Debug("req", "id", req.ID, "method", req.Method)
-		resp := s.handle(ctx, req.ID, req.Method, req.Params)
-		if resp != nil {
-			if err := enc.Encode(resp); err != nil {
-				return fmt.Errorf("encode response: %w", err)
+	for {
+		select {
+		case <-ctx.Done():
+			s.log.Info("shutdown: context cancelled, stopping request loop")
+			return nil
+		case line, ok := <-lines:
+			if !ok {
+				return <-scanErr
+			}
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			var req struct {
+				JSONRPC string          `json:"jsonrpc"`
+				ID      any             `json:"id"`
+				Method  string          `json:"method"`
+				Params  json.RawMessage `json:"params"`
+			}
+			if err := json.Unmarshal([]byte(line), &req); err != nil {
+				s.log.Warn("parse error", "line", line)
+				continue
+			}
+			s.log.Debug("req", "id", req.ID, "method", req.Method)
+			resp := s.handle(ctx, req.ID, req.Method, req.Params)
+			if resp != nil {
+				if err := enc.Encode(resp); err != nil {
+					return fmt.Errorf("encode response: %w", err)
+				}
 			}
 		}
 	}
-	return scanner.Err()
 }
 
 func (s *Server) handle(ctx context.Context, id any, method string, params json.RawMessage) any {
