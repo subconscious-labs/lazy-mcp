@@ -38,6 +38,7 @@ type circuit struct {
 	state            circuitState
 	consecutiveFails int
 	openedAt         time.Time
+	lastErr          error // last failure, for diagnostics
 
 	threshold int
 	cooldown  time.Duration
@@ -49,7 +50,8 @@ func newCircuit(threshold int, cooldown time.Duration) *circuit {
 
 // allow returns nil if a call may proceed. In open state it transitions to
 // half-open once cooldown has elapsed and lets exactly one probe through;
-// concurrent probes are rejected.
+// concurrent probes are rejected. The error text includes the last
+// recorded failure so callers can diagnose the root cause.
 func (c *circuit) allow() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -61,10 +63,15 @@ func (c *circuit) allow() error {
 	case circuitOpen:
 		remaining := c.cooldown - time.Since(c.openedAt)
 		if remaining > 0 {
-			return fmt.Errorf("%w (retry in %s)", ErrCircuitOpen, remaining.Round(time.Second))
+			if c.lastErr != nil {
+				return fmt.Errorf("%w (retry in %s; last error: %v)",
+					ErrCircuitOpen, remaining.Round(time.Second), c.lastErr)
+			}
+			return fmt.Errorf("%w (retry in %s)",
+				ErrCircuitOpen, remaining.Round(time.Second))
 		}
 		c.state = circuitHalfOpen
-		return nil // this caller is the probe
+		return nil
 
 	case circuitHalfOpen:
 		return fmt.Errorf("%w (probe in flight)", ErrCircuitOpen)
@@ -80,11 +87,11 @@ func (c *circuit) recordSuccess() {
 	c.openedAt = time.Time{}
 }
 
-func (c *circuit) recordFailure() {
+func (c *circuit) recordFailure(err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.consecutiveFails++
-	// In half-open, any failure re-opens immediately.
+	c.lastErr = err
 	if c.state == circuitHalfOpen || c.consecutiveFails >= c.threshold {
 		c.state = circuitOpen
 		c.openedAt = time.Now()
@@ -95,4 +102,10 @@ func (c *circuit) snapshot() (circuitState, int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.state, c.consecutiveFails
+}
+
+func (c *circuit) lastError() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lastErr
 }

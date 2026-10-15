@@ -156,7 +156,7 @@ func (b *Broker) classify(serverName string, err error, origCtx context.Context)
 	}
 
 	prevState, prevFails := c.snapshot()
-	c.recordFailure()
+	c.recordFailure(err)
 	newState, _ := c.snapshot()
 	if newState != prevState {
 		b.log.Warn("circuit opened",
@@ -205,16 +205,22 @@ type ServerStatus struct {
 	Running      bool
 	Circuit      string
 	LastToolCall time.Time // zero if never used
+	LastError    string // last failure that tripped/last-updated the circuit
 }
 
-// Status returns a snapshot of runtime state for serverName.
 func (b *Broker) Status(serverName string) ServerStatus {
 	b.mu.Lock()
 	proc := b.pool[serverName]
 	b.mu.Unlock()
+
 	st := ServerStatus{
 		Name:    serverName,
 		Circuit: b.CircuitState(serverName),
+	}
+	if c := b.circuitFor(serverName); c != nil {
+		if e := c.lastError(); e != nil {
+			st.LastError = e.Error()
+		}
 	}
 	if proc != nil {
 		st.Running = proc.Alive()
@@ -289,7 +295,7 @@ func (b *Broker) reapIdle(ttl time.Duration) {
 
 	now := time.Now()
 	for name, proc := range procs {
-		last := proc.LastToolCall()
+		last := proc.LastActivity()
 		if now.Sub(last) < ttl {
 			continue
 		}

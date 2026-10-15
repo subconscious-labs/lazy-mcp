@@ -269,6 +269,7 @@ func (h *Handlers) ListServers(_ context.Context, args map[string]any) (string, 
 		Running      bool     `json:"running"`
 		Circuit      string   `json:"circuit"`
 		LastToolCall string   `json:"last_tool_call,omitempty"`
+		LastError    string   `json:"last_error,omitempty"`
 	}
 	out := make([]srvOut, 0, len(servers))
 	for _, s := range servers {
@@ -287,6 +288,7 @@ func (h *Handlers) ListServers(_ context.Context, args map[string]any) (string, 
 		st := h.brok.Status(s.Name)
 		item.Running = st.Running
 		item.Circuit = st.Circuit
+		item.LastError = st.LastError
 		if !st.LastToolCall.IsZero() {
 			item.LastToolCall = st.LastToolCall.UTC().Format(time.RFC3339)
 		}

@@ -52,6 +52,7 @@ type backendProcess struct {
 	nextID atomic.Int64
 
 	lastToolCall time.Time
+	startedAt    time.Time
 }
 
 func newBackendProcess(cfg config.ServerConfig, log *logx.Logger) *backendProcess {
@@ -103,7 +104,10 @@ func (p *backendProcess) start(ctx context.Context) error {
 	p.proc = cmd
 	p.pending = make(map[int64]chan *rpcMessage)
 	p.scanErr = nil
-	p.lastToolCall = time.Now()
+	p.startedAt = time.Now()
+	// NOTE: lastToolCall is intentionally NOT touched here — it must
+	// reflect tools/call only, not process starts. Idle-reaper uses
+	// LastActivity() which takes max(lastToolCall, startedAt).
 	p.mu.Unlock()
 
 	p.log.Info("backend started", "server", p.cfg.Name, "pid", cmd.Process.Pid)
@@ -337,8 +341,11 @@ func (p *backendProcess) StopIfIdle(ttl time.Duration) bool {
 		p.mu.Unlock()
 		return false
 	}
-	idle := time.Since(p.lastToolCall)
-	if idle < ttl {
+	last := p.lastToolCall
+	if last.IsZero() {
+		last = p.startedAt
+	}
+	if time.Since(last) < ttl {
 		p.mu.Unlock()
 		return false
 	}
@@ -354,6 +361,18 @@ func (p *backendProcess) LastToolCall() time.Time {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.lastToolCall
+}
+
+// LastActivity returns the most recent of startedAt and lastToolCall.
+// A freshly-started process that has never been called counts as active
+// since startedAt, so the reaper does not kill it immediately.
+func (p *backendProcess) LastActivity() time.Time {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.lastToolCall.After(p.startedAt) {
+		return p.lastToolCall
+	}
+	return p.startedAt
 }
 
 // kill forcibly terminates the process. Safe to call multiple times.
