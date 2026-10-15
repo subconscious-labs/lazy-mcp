@@ -51,7 +51,7 @@ type backendProcess struct {
 
 	nextID atomic.Int64
 
-	lastUsed time.Time
+	lastToolCall time.Time
 }
 
 func newBackendProcess(cfg config.ServerConfig, log *logx.Logger) *backendProcess {
@@ -103,7 +103,7 @@ func (p *backendProcess) start(ctx context.Context) error {
 	p.proc = cmd
 	p.pending = make(map[int64]chan *rpcMessage)
 	p.scanErr = nil
-	p.lastUsed = time.Now()
+	p.lastToolCall = time.Now()
 	p.mu.Unlock()
 
 	p.log.Info("backend started", "server", p.cfg.Name, "pid", cmd.Process.Pid)
@@ -208,7 +208,6 @@ func (p *backendProcess) request(ctx context.Context, method string, params any)
 		return nil, fmt.Errorf("backend not started")
 	}
 	p.pending[id] = ch
-	p.lastUsed = time.Now()
 	p.mu.Unlock()
 
 	if err := p.write(map[string]any{
@@ -281,6 +280,9 @@ func (p *backendProcess) ListTools(ctx context.Context) ([]ToolInfo, error) {
 
 // CallTool calls tools/call on the backend.
 func (p *backendProcess) CallTool(ctx context.Context, name string, args map[string]any) (string, error) {
+	p.mu.Lock()
+	p.lastToolCall = time.Now()
+	p.mu.Unlock()
 	res, err := p.request(ctx, "tools/call", map[string]any{
 		"name":      name,
 		"arguments": args,
@@ -335,7 +337,7 @@ func (p *backendProcess) StopIfIdle(ttl time.Duration) bool {
 		p.mu.Unlock()
 		return false
 	}
-	idle := time.Since(p.lastUsed)
+	idle := time.Since(p.lastToolCall)
 	if idle < ttl {
 		p.mu.Unlock()
 		return false
@@ -346,12 +348,12 @@ func (p *backendProcess) StopIfIdle(ttl time.Duration) bool {
 	return true
 }
 
-// LastUsed returns the time of the last request sent to this backend.
-// Used by the idle reaper (TODO 1.5).
-func (p *backendProcess) LastUsed() time.Time {
+// LastToolCall returns the time of the last tools/call sent to this backend.
+// Catalog refreshes (tools/list) do NOT count.
+func (p *backendProcess) LastToolCall() time.Time {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.lastUsed
+	return p.lastToolCall
 }
 
 // kill forcibly terminates the process. Safe to call multiple times.

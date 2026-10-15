@@ -55,6 +55,9 @@ func (b *Broker) Ensure(ctx context.Context, serverName string) (Backend, error)
 	if !ok {
 		return nil, fmt.Errorf("broker: server %q not found in config", serverName)
 	}
+	if !srvcfg.Enabled {
+		return nil, fmt.Errorf("broker: server %q is disabled", serverName)
+	}
 
 	b.mu.Lock()
 	proc, exists := b.pool[serverName]
@@ -198,10 +201,10 @@ func (b *Broker) CircuitState(serverName string) string {
 
 // ServerStatus summarizes runtime state of a single backend.
 type ServerStatus struct {
-	Name     string
-	Running  bool
-	Circuit  string
-	LastUsed time.Time // zero if never used
+	Name         string
+	Running      bool
+	Circuit      string
+	LastToolCall time.Time // zero if never used
 }
 
 // Status returns a snapshot of runtime state for serverName.
@@ -209,14 +212,13 @@ func (b *Broker) Status(serverName string) ServerStatus {
 	b.mu.Lock()
 	proc := b.pool[serverName]
 	b.mu.Unlock()
-
 	st := ServerStatus{
 		Name:    serverName,
 		Circuit: b.CircuitState(serverName),
 	}
 	if proc != nil {
 		st.Running = proc.Alive()
-		st.LastUsed = proc.LastUsed()
+		st.LastToolCall = proc.LastToolCall()
 	}
 	return st
 }
@@ -287,7 +289,7 @@ func (b *Broker) reapIdle(ttl time.Duration) {
 
 	now := time.Now()
 	for name, proc := range procs {
-		last := proc.LastUsed()
+		last := proc.LastToolCall()
 		if now.Sub(last) < ttl {
 			continue
 		}

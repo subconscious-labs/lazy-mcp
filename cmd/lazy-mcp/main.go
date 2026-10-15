@@ -29,7 +29,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	log.Info("config loaded", "servers", len(cfg.Servers), "prefix", cfg.Proxy.ToolPrefix)
+	var disabled []string
+	for _, s := range cfg.Servers {
+		if !s.Enabled {
+			disabled = append(disabled, s.Name)
+		}
+	}
+	log.Info("config loaded",
+		"servers", len(cfg.Servers),
+		"enabled", len(cfg.EnabledServers()),
+		"disabled", disabled,
+		"prefix", cfg.Proxy.ToolPrefix)
 
 	brok := broker.New(cfg, log)
 	cat := catalog.New(cfg, brok, log)

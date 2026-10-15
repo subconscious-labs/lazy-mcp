@@ -247,31 +247,48 @@ func (h *Handlers) DescribeTool(ctx context.Context, args map[string]any) (strin
 }
 
 // ListServers returns configured backends and their runtime status.
-func (h *Handlers) ListServers(_ context.Context, _ map[string]any) (string, error) {
-	type srvOut struct {
-		Name        string   `json:"name"`
-		Description string   `json:"description"`
-		Tags        []string `json:"tags"`
-		Enabled     bool     `json:"enabled"`
-		Autostart   bool     `json:"autostart"`
-		Running     bool     `json:"running"`
-		Circuit     string   `json:"circuit"`
-		LastUsed    string   `json:"last_used,omitempty"`
+// args: {"include_disabled": bool}
+//
+// By default only enabled servers are listed. Pass include_disabled:true
+// to see the full registry (disabled entries have circuit:"disabled" and
+// running:false).
+func (h *Handlers) ListServers(_ context.Context, args map[string]any) (string, error) {
+	includeDisabled, _ := args["include_disabled"].(bool)
+
+	servers := h.cfg.EnabledServers()
+	if includeDisabled {
+		servers = h.cfg.Servers
 	}
-	var out []srvOut
-	for _, s := range h.cfg.EnabledServers() {
-		st := h.brok.Status(s.Name)
+
+	type srvOut struct {
+		Name         string   `json:"name"`
+		Description  string   `json:"description"`
+		Tags         []string `json:"tags"`
+		Enabled      bool     `json:"enabled"`
+		Autostart    bool     `json:"autostart"`
+		Running      bool     `json:"running"`
+		Circuit      string   `json:"circuit"`
+		LastToolCall string   `json:"last_tool_call,omitempty"`
+	}
+	out := make([]srvOut, 0, len(servers))
+	for _, s := range servers {
 		item := srvOut{
 			Name:        s.Name,
 			Description: s.Description,
 			Tags:        s.Tags,
 			Enabled:     s.Enabled,
 			Autostart:   s.Autostart,
-			Running:     st.Running,
-			Circuit:     st.Circuit,
 		}
-		if !st.LastUsed.IsZero() {
-			item.LastUsed = st.LastUsed.UTC().Format(time.RFC3339)
+		if !s.Enabled {
+			item.Circuit = "disabled"
+			out = append(out, item)
+			continue
+		}
+		st := h.brok.Status(s.Name)
+		item.Running = st.Running
+		item.Circuit = st.Circuit
+		if !st.LastToolCall.IsZero() {
+			item.LastToolCall = st.LastToolCall.UTC().Format(time.RFC3339)
 		}
 		out = append(out, item)
 	}

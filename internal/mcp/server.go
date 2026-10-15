@@ -193,10 +193,15 @@ func (s *Server) toolManifest(prefix string) []map[string]any {
 		},
 		{
 			"name":        prefix + "_list_servers",
-			"description": "List all configured MCP backend servers, their descriptions and tags.",
+			"description": "List MCP backend servers with runtime status (running, circuit state, last tool call). By default only enabled servers are shown; pass include_disabled:true to see the full registry.",
 			"inputSchema": map[string]any{
-				"type":       "object",
-				"properties": map[string]any{},
+				"type": "object",
+				"properties": map[string]any{
+					"include_disabled": map[string]any{
+						"type":        "boolean",
+						"description": "Include disabled servers (default: false)",
+					},
+				},
 			},
 		},
 	}

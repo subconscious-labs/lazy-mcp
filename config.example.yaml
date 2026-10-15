@@ -7,7 +7,9 @@ proxy:
   max_search_results: 8
   # Warm up all servers at start instead of lazy init
   warmup: false
-  # Kill idle subprocess after this duration (0 = never)
+  # Kill idle subprocess after this duration with no tools/call activity.
+  # Catalog refreshes (tools/list) do NOT count as activity.
+  # 0 = never. Default: 10m.
   idle_ttl: 10m
   # How long to cache tools/list from a backend
   tool_cache_ttl: 30m
