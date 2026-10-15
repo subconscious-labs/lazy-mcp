@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -16,6 +17,11 @@ import (
 	"github.com/nikita-popov/lazy-mcp/internal/config"
 	"github.com/nikita-popov/lazy-mcp/internal/logx"
 )
+
+// ErrToolError indicates the tool itself returned isError:true.
+// The backend is healthy — this is a business-level result, not a
+// transport failure.
+var ErrToolError = errors.New("tool returned error")
 
 type rpcMessage struct {
 	JSONRPC string          `json:"jsonrpc"`
@@ -303,7 +309,7 @@ func (p *backendProcess) CallTool(ctx context.Context, name string, args map[str
 	}
 	result := strings.Join(parts, "\n")
 	if cr.IsError {
-		return "", fmt.Errorf("tool error: %s", result)
+		return "", fmt.Errorf("%w: %s", ErrToolError, result)
 	}
 	return result, nil
 }

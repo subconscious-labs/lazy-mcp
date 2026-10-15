@@ -30,6 +30,22 @@ type ProxyConfig struct {
 	// ShutdownTimeout is the grace period for in-flight requests on SIGINT/SIGTERM.
 	// Default: 5 seconds.
 	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
+	// CircuitBreaker isolates misbehaving backends.
+	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
+}
+
+// CircuitBreakerConfig controls per-backend failure isolation.
+type CircuitBreakerConfig struct {
+	// Enabled defaults to true when omitted. Explicitly set `enabled: false`
+	// to disable.
+	Enabled          *bool         `yaml:"enabled"`
+	FailureThreshold int           `yaml:"failure_threshold"`
+	Cooldown         time.Duration `yaml:"cooldown"`
+}
+
+// IsEnabled returns true unless explicitly disabled.
+func (c CircuitBreakerConfig) IsEnabled() bool {
+	return c.Enabled == nil || *c.Enabled
 }
 
 // ServerConfig describes a single stdio MCP backend.
@@ -80,6 +96,12 @@ func (c *Config) defaults() {
 	}
 	if c.Proxy.ShutdownTimeout == 0 {
 		c.Proxy.ShutdownTimeout = 5 * time.Second
+	}
+	if c.Proxy.CircuitBreaker.FailureThreshold <= 0 {
+		c.Proxy.CircuitBreaker.FailureThreshold = 5
+	}
+	if c.Proxy.CircuitBreaker.Cooldown <= 0 {
+		c.Proxy.CircuitBreaker.Cooldown = 30 * time.Second
 	}
 }
 

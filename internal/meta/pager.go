@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // pagedResult holds pre-split pages for a single call result.
@@ -28,7 +29,9 @@ func NewPageStore(ttl time.Duration) *PageStore {
 		entries: make(map[string]*pagedResult),
 		ttl:     ttl,
 	}
-	go ps.reaper()
+	if ttl > 0 {
+		go ps.reaper()
+	}
 	return ps
 }
 
@@ -51,6 +54,13 @@ func (ps *PageStore) Store(content string, pageSize int) (firstPage, cursor stri
 			if content[i] == '\n' {
 				cut = i + 1
 				break
+			}
+		}
+		// Back off to a rune boundary if no newline was found nearby.
+		// Stop at 1: cutting mid-rune is better than spinning forever.
+		if content[cut-1] != '\n' {
+			for cut > 1 && !utf8.RuneStart(content[cut]) {
+				cut--
 			}
 		}
 		pages = append(pages, content[:cut])
@@ -101,7 +111,14 @@ func (ps *PageStore) Next(cursor string) (page, nextCursor string, hasMore bool,
 }
 
 func (ps *PageStore) reaper() {
-	ticker := time.NewTicker(ps.ttl / 2)
+	if ps.ttl <= 0 {
+		return
+	}
+	interval := ps.ttl / 2
+	if interval < time.Second {
+		interval = time.Second
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for range ticker.C {
 		now := time.Now()

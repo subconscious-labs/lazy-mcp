@@ -4,6 +4,7 @@ package broker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -30,16 +31,21 @@ type Backend interface {
 type Broker struct {
 	cfg  *config.Config
 	log  *logx.Logger
+
 	mu   sync.Mutex
 	pool map[string]*backendProcess
+
+	circuitsMu sync.Mutex
+	circuits   map[string]*circuit
 }
 
 // New creates a Broker.
 func New(cfg *config.Config, log *logx.Logger) *Broker {
 	return &Broker{
-		cfg:  cfg,
-		log:  log,
-		pool: make(map[string]*backendProcess),
+		cfg:      cfg,
+		log:      log,
+		pool:     make(map[string]*backendProcess),
+		circuits: make(map[string]*circuit),
 	}
 }
 
@@ -65,27 +71,154 @@ func (b *Broker) Ensure(ctx context.Context, serverName string) (Backend, error)
 }
 
 // CallTool ensures the backend is running then calls a tool.
-// The configured exec_timeout is applied only to the call itself,
-// not to backend startup (that has its own bounded handshake).
+// Applies the circuit breaker and the configured exec_timeout.
 func (b *Broker) CallTool(ctx context.Context, serverName, tool string, args map[string]any) (string, error) {
-	back, err := b.Ensure(ctx, serverName)
-	if err != nil {
+	origCtx := ctx
+
+	if err := b.gate(serverName); err != nil {
 		return "", err
 	}
-	ctx, cancel := b.withExecTimeout(ctx)
+
+	back, err := b.Ensure(ctx, serverName)
+	if err != nil {
+		b.classify(serverName, err, origCtx)
+		return "", err
+	}
+
+	callCtx, cancel := b.withExecTimeout(ctx)
 	defer cancel()
-	return back.CallTool(ctx, tool, args)
+
+	result, err := back.CallTool(callCtx, tool, args)
+	b.classify(serverName, err, origCtx)
+	return result, err
 }
 
 // ListTools ensures the backend is running then lists tools.
 func (b *Broker) ListTools(ctx context.Context, serverName string) ([]ToolInfo, error) {
-	back, err := b.Ensure(ctx, serverName)
-	if err != nil {
+	origCtx := ctx
+
+	if err := b.gate(serverName); err != nil {
 		return nil, err
 	}
-	ctx, cancel := b.withExecTimeout(ctx)
+
+	back, err := b.Ensure(ctx, serverName)
+	if err != nil {
+		b.classify(serverName, err, origCtx)
+		return nil, err
+	}
+
+	callCtx, cancel := b.withExecTimeout(ctx)
 	defer cancel()
-	return back.ListTools(ctx)
+
+	tools, err := back.ListTools(callCtx)
+	b.classify(serverName, err, origCtx)
+	return tools, err
+}
+
+// gate checks whether a call to serverName is currently allowed.
+// Returns ErrCircuitOpen (wrapped) if the circuit is open.
+func (b *Broker) gate(serverName string) error {
+	c := b.circuitFor(serverName)
+	if c == nil {
+		return nil
+	}
+	return c.allow()
+}
+
+// classify updates the circuit for serverName based on the outcome of a call.
+// origCtx is the caller's context before any timeout wrapper was applied —
+// used to distinguish client cancellation from our own exec_timeout.
+func (b *Broker) classify(serverName string, err error, origCtx context.Context) {
+	c := b.circuitFor(serverName)
+	if c == nil {
+		return
+	}
+
+	// Successful round-trip. This includes tools that returned isError:true
+	// (that's a business error, not a backend failure) and errors wrapped in
+	// ToolError by the process layer.
+	if err == nil || errors.Is(err, ErrToolError) {
+		prevState, _ := c.snapshot()
+		c.recordSuccess()
+		if prevState != circuitClosed {
+			b.log.Info("circuit closed", "server", serverName)
+		}
+		return
+	}
+
+	// If the caller's own context was cancelled or its deadline expired,
+	// don't blame the backend.
+	if origCtx.Err() != nil {
+		return
+	}
+
+	prevState, prevFails := c.snapshot()
+	c.recordFailure()
+	newState, _ := c.snapshot()
+	if newState != prevState {
+		b.log.Warn("circuit opened",
+			"server", serverName,
+			"consecutive_failures", prevFails+1,
+			"cooldown", b.cfg.Proxy.CircuitBreaker.Cooldown.String())
+	} else if newState == circuitOpen {
+		b.log.Warn("circuit failure",
+			"server", serverName,
+			"consecutive_failures", prevFails+1)
+	}
+}
+
+// circuitFor returns the circuit for serverName, or nil if disabled.
+func (b *Broker) circuitFor(serverName string) *circuit {
+	if !b.cfg.Proxy.CircuitBreaker.IsEnabled() {
+		return nil
+	}
+	b.circuitsMu.Lock()
+	defer b.circuitsMu.Unlock()
+	c, ok := b.circuits[serverName]
+	if !ok {
+		c = newCircuit(
+			b.cfg.Proxy.CircuitBreaker.FailureThreshold,
+			b.cfg.Proxy.CircuitBreaker.Cooldown,
+		)
+		b.circuits[serverName] = c
+	}
+	return c
+}
+
+// CircuitState returns the current circuit state for a server ("closed",
+// "open", "half-open", or "disabled"). For use by status endpoints.
+func (b *Broker) CircuitState(serverName string) string {
+	c := b.circuitFor(serverName)
+	if c == nil {
+		return "disabled"
+	}
+	s, _ := c.snapshot()
+	return s.String()
+}
+
+// ServerStatus summarizes runtime state of a single backend.
+type ServerStatus struct {
+	Name     string
+	Running  bool
+	Circuit  string
+	LastUsed time.Time // zero if never used
+}
+
+// Status returns a snapshot of runtime state for serverName.
+func (b *Broker) Status(serverName string) ServerStatus {
+	b.mu.Lock()
+	proc := b.pool[serverName]
+	b.mu.Unlock()
+
+	st := ServerStatus{
+		Name:    serverName,
+		Circuit: b.CircuitState(serverName),
+	}
+	if proc != nil {
+		st.Running = proc.Alive()
+		st.LastUsed = proc.LastUsed()
+	}
+	return st
 }
 
 // withExecTimeout wraps ctx with proxy.exec_timeout if configured.

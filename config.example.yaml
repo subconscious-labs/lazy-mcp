@@ -13,10 +13,26 @@ proxy:
   tool_cache_ttl: 30m
   # Timeout for a single tool call
   exec_timeout: 60s
-  # Max bytes of tool result returned to model (0 = unlimited)
-  max_result_bytes: 65536
-  # Grace period for in-flight requests on SIGINT/SIGTERM
+  # Hard safety net on tool result size. Only applied when pagination is
+  # disabled (page_size <= 0) or when page_size itself exceeds this value.
+  # Set to 0 to disable. Default: 262144 (256 KiB).
+  max_result_bytes: 262144
+  # Default page size for meta_call when page_size is not passed explicitly.
+  # 0 = pagination disabled.
+  default_page_size: 0
+  # How long paged cursors are kept in memory between calls.
+  cursor_ttl: 5m
+  # Grace period for in-flight requests on SIGINT/SIGTERM.
   shutdown_timeout: 5s
+  # Circuit breaker: isolate a backend after N consecutive transport-level
+  # failures. Tool-level errors (isError:true) do NOT count.
+  circuit_breaker:
+    # Default: true.
+    enabled: true
+    # Consecutive failures before the circuit opens.
+    failure_threshold: 5
+    # How long to stay open before probing with a single request.
+    cooldown: 30s
 
 servers:
   - name: mempalace

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 	"unicode/utf8"
 
 	"github.com/nikita-popov/lazy-mcp/internal/broker"
@@ -159,9 +160,9 @@ func (h *Handlers) callCursorNext(cursor string) (string, error) {
 // buildResponse applies max_result_bytes safety net and pagination.
 func (h *Handlers) buildResponse(raw string, pageSize, pageNum int) (string, error) {
 	maxBytes := h.cfg.Proxy.MaxResultBytes
-
-	// Safety net: if raw exceeds hard limit AND pageSize is larger, truncate with hint.
-	if maxBytes > 0 && pageSize > maxBytes && len(raw) > maxBytes {
+	// Safety net: if raw exceeds the hard limit, and pagination either disabled
+	// or set too coarse to help, truncate with a hint.
+	if maxBytes > 0 && len(raw) > maxBytes && (pageSize <= 0 || pageSize > maxBytes) {
 		truncated := truncateBytes(raw, maxBytes)
 		out := callResult{
 			Result:    truncated,
@@ -171,7 +172,6 @@ func (h *Handlers) buildResponse(raw string, pageSize, pageNum int) (string, err
 		b, _ := json.MarshalIndent(out, "", "  ")
 		return string(b), nil
 	}
-
 	// Normal pagination via PageStore.
 	firstPage, cursor, hasMore := h.pager.Store(raw, pageSize)
 	out := callResult{
@@ -246,7 +246,7 @@ func (h *Handlers) DescribeTool(ctx context.Context, args map[string]any) (strin
 	return string(b), nil
 }
 
-// ListServers returns configured backends and their status.
+// ListServers returns configured backends and their runtime status.
 func (h *Handlers) ListServers(_ context.Context, _ map[string]any) (string, error) {
 	type srvOut struct {
 		Name        string   `json:"name"`
@@ -254,16 +254,26 @@ func (h *Handlers) ListServers(_ context.Context, _ map[string]any) (string, err
 		Tags        []string `json:"tags"`
 		Enabled     bool     `json:"enabled"`
 		Autostart   bool     `json:"autostart"`
+		Running     bool     `json:"running"`
+		Circuit     string   `json:"circuit"`
+		LastUsed    string   `json:"last_used,omitempty"`
 	}
 	var out []srvOut
 	for _, s := range h.cfg.EnabledServers() {
-		out = append(out, srvOut{
+		st := h.brok.Status(s.Name)
+		item := srvOut{
 			Name:        s.Name,
 			Description: s.Description,
 			Tags:        s.Tags,
 			Enabled:     s.Enabled,
 			Autostart:   s.Autostart,
-		})
+			Running:     st.Running,
+			Circuit:     st.Circuit,
+		}
+		if !st.LastUsed.IsZero() {
+			item.LastUsed = st.LastUsed.UTC().Format(time.RFC3339)
+		}
+		out = append(out, item)
 	}
 	b, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
