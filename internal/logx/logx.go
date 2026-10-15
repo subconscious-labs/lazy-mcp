@@ -30,7 +30,7 @@ func (l *Logger) log(level string, msg string, kv []any) {
 	}
 	b, _ := json.Marshal(rec)
 	l.mu.Lock()
-	l.w.Write(append(b, '\n')) //nolint:errcheck
+	l.w.Write(append(b, '\n'))
 	l.mu.Unlock()
 }
 

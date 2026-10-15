@@ -16,7 +16,7 @@ import (
 
 // ToolEntry is a compact catalog entry for one tool.
 type ToolEntry struct {
-	Ref         string   // "server/toolname"
+	Ref         string // "server/toolname"
 	Server      string
 	Tool        string
 	Summary     string
@@ -48,11 +48,11 @@ type SearchResult struct {
 
 // Catalog holds all indexed tools.
 type Catalog struct {
-	cfg    *config.Config
-	brok   *broker.Broker
-	log    *logx.Logger
-	mu     sync.RWMutex
-	entries []ToolEntry
+	cfg         *config.Config
+	brok        *broker.Broker
+	log         *logx.Logger
+	mu          sync.RWMutex
+	entries     []ToolEntry
 	lastRefresh map[string]time.Time // server name -> last successful refresh
 }
 

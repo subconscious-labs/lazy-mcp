@@ -317,12 +317,11 @@ func splitRef(ref string) (server, tool string, err error) {
 
 // truncateBytes caps s to at most max bytes without splitting a UTF-8 rune.
 // max <= 0 means no limit.
-func truncateBytes(s string, max int) string {
-	if max <= 0 || len(s) <= max {
+func truncateBytes(s string, limit int) string {
+	if limit <= 0 || len(s) <= limit {
 		return s
 	}
-	// Back off to a rune boundary so we don't emit a broken codepoint.
-	cut := max
+	cut := limit
 	for cut > 0 && !utf8.RuneStart(s[cut]) {
 		cut--
 	}

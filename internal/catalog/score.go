@@ -33,10 +33,10 @@ func scoreWord(w string, e ToolEntry) float64 {
 		}
 	}
 	if strings.Contains(serverLower, w) {
-		s += 1
+		s++
 	}
 	if strings.Contains(summaryLower, w) {
-		s += 1
+		s++
 	}
 	return s
 }

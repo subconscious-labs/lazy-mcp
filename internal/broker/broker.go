@@ -29,8 +29,8 @@ type Backend interface {
 
 // Broker manages backends keyed by server name.
 type Broker struct {
-	cfg  *config.Config
-	log  *logx.Logger
+	cfg *config.Config
+	log *logx.Logger
 
 	mu   sync.Mutex
 	pool map[string]*backendProcess
@@ -88,7 +88,7 @@ func (b *Broker) CallTool(ctx context.Context, serverName, tool string, args map
 
 	back, err := b.Ensure(ctx, serverName)
 	if err != nil {
-		b.classify(serverName, err, origCtx)
+		b.classify(origCtx, serverName, err)
 		return "", err
 	}
 
@@ -96,7 +96,7 @@ func (b *Broker) CallTool(ctx context.Context, serverName, tool string, args map
 	defer cancel()
 
 	result, err := back.CallTool(callCtx, tool, args)
-	b.classify(serverName, err, origCtx)
+	b.classify(origCtx, serverName, err)
 	return result, err
 }
 
@@ -110,7 +110,7 @@ func (b *Broker) ListTools(ctx context.Context, serverName string) ([]ToolInfo, 
 
 	back, err := b.Ensure(ctx, serverName)
 	if err != nil {
-		b.classify(serverName, err, origCtx)
+		b.classify(origCtx, serverName, err)
 		return nil, err
 	}
 
@@ -118,7 +118,7 @@ func (b *Broker) ListTools(ctx context.Context, serverName string) ([]ToolInfo, 
 	defer cancel()
 
 	tools, err := back.ListTools(callCtx)
-	b.classify(serverName, err, origCtx)
+	b.classify(origCtx, serverName, err)
 	return tools, err
 }
 
@@ -135,7 +135,7 @@ func (b *Broker) gate(serverName string) error {
 // classify updates the circuit for serverName based on the outcome of a call.
 // origCtx is the caller's context before any timeout wrapper was applied —
 // used to distinguish client cancellation from our own exec_timeout.
-func (b *Broker) classify(serverName string, err error, origCtx context.Context) {
+func (b *Broker) classify(ctx context.Context, serverName string, err error) {
 	c := b.circuitFor(serverName)
 	if c == nil {
 		return
@@ -155,7 +155,7 @@ func (b *Broker) classify(serverName string, err error, origCtx context.Context)
 
 	// If the caller's own context was cancelled or its deadline expired,
 	// don't blame the backend.
-	if origCtx.Err() != nil {
+	if ctx.Err() != nil {
 		return
 	}
 
@@ -209,7 +209,7 @@ type ServerStatus struct {
 	Running      bool
 	Circuit      string
 	LastToolCall time.Time // zero if never used
-	LastError    string // last failure that tripped/last-updated the circuit
+	LastError    string    // last failure that tripped/last-updated the circuit
 }
 
 func (b *Broker) Status(serverName string) ServerStatus {

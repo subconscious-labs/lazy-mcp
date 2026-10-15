@@ -64,6 +64,9 @@ func (c *circuit) allow() error {
 		remaining := c.cooldown - time.Since(c.openedAt)
 		if remaining > 0 {
 			if c.lastErr != nil {
+				// lastErr is diagnostic context, not an error chain — %v is
+				// intentional so errors.Is does not traverse into it.
+				//nolint:errorlint // c.lastErr is diagnostic, not a wrap target
 				return fmt.Errorf("%w (retry in %s; last error: %v)",
 					ErrCircuitOpen, remaining.Round(time.Second), c.lastErr)
 			}

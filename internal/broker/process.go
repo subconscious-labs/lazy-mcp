@@ -92,7 +92,7 @@ func (p *backendProcess) start(ctx context.Context) error {
 	}
 
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start %q: %w", p.cfg.Command, err)
+		return fmt.Errorf("exec %q: %w", p.cfg.Command, err)
 	}
 
 	p.writeMu.Lock()

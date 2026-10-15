@@ -99,7 +99,7 @@ func (s *Server) handle(ctx context.Context, id any, method string, params json.
 	case "initialize":
 		return s.respond(id, map[string]any{
 			"protocolVersion": "2024-11-05",
-			"capabilities":   map[string]any{"tools": map[string]any{}},
+			"capabilities":    map[string]any{"tools": map[string]any{}},
 			"serverInfo": map[string]any{
 				"name":    "lazy-mcp",
 				"version": "0.1.0",
@@ -157,7 +157,7 @@ func (s *Server) toolManifest(prefix string) []map[string]any {
 	return []map[string]any{
 		{
 			"name":        prefix + "_search",
-						"description": "Search for tools across all registered MCP backends. Returns {hits: [...], warnings: [...]}. warnings appear when a query term matches an enabled server's metadata but that server has no tools indexed (e.g. it is down). Use this first to discover available tools.",
+			"description": "Search for tools across all registered MCP backends. Returns {hits: [...], warnings: [...]}. warnings appear when a query term matches an enabled server's metadata but that server has no tools indexed (e.g. it is down). Use this first to discover available tools.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
