@@ -50,6 +50,7 @@ func New(cfg *config.Config, log *logx.Logger) *Broker {
 }
 
 // Ensure returns a ready Backend for serverName, starting it if necessary.
+// The handshake (initialize) is bounded by proxy.initialize_timeout.
 func (b *Broker) Ensure(ctx context.Context, serverName string) (Backend, error) {
 	srvcfg, ok := b.cfg.Server(serverName)
 	if !ok {
@@ -67,7 +68,10 @@ func (b *Broker) Ensure(ctx context.Context, serverName string) (Backend, error)
 	}
 	b.mu.Unlock()
 
-	if err := proc.Ensure(ctx); err != nil {
+	startCtx, cancel := context.WithTimeout(ctx, b.cfg.Proxy.InitializeTimeout)
+	defer cancel()
+
+	if err := proc.Ensure(startCtx); err != nil {
 		return nil, fmt.Errorf("broker: start %q: %w", serverName, err)
 	}
 	return proc, nil

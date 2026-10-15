@@ -115,11 +115,10 @@ func (p *backendProcess) start(ctx context.Context) error {
 	// Single reader goroutine demuxes responses by id.
 	go p.readLoop(stdout)
 
-	// MCP initialize handshake, bounded by ctx (caller may add timeout).
-	initCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	if _, err := p.request(initCtx, "initialize", map[string]any{
+	// MCP initialize handshake. The caller (Broker.Ensure) bounds ctx with
+	// proxy.initialize_timeout; we do not impose our own limit here so the
+	// timeout is uniform across the whole startup path.
+	if _, err := p.request(ctx, "initialize", map[string]any{
 		"protocolVersion": "2024-11-05",
 		"capabilities":    map[string]any{},
 		"clientInfo": map[string]any{

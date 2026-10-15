@@ -15,6 +15,9 @@ proxy:
   tool_cache_ttl: 30m
   # Timeout for a single tool call
   exec_timeout: 60s
+  # Timeout for MCP handshake when starting a backend. Slow backends
+  # (cold caches, remote probes on startup) may need more. Default: 10s.
+  initialize_timeout: 10s
   # Hard safety net on tool result size. Only applied when pagination is
   # disabled (page_size <= 0) or when page_size itself exceeds this value.
   # Set to 0 to disable. Default: 262144 (256 KiB).

@@ -16,6 +16,11 @@ type ProxyConfig struct {
 	IdleTTL          time.Duration `yaml:"idle_ttl"`
 	ToolCacheTTL     time.Duration `yaml:"tool_cache_ttl"`
 	ExecTimeout      time.Duration `yaml:"exec_timeout"`
+	// InitializeTimeout bounds the MCP handshake (initialize request +
+	// initialized notification) when starting a backend. Slow-starting
+	// backends (cold caches, remote dependencies probed on startup) may
+	// need more than the default. Default: 10s.
+	InitializeTimeout time.Duration `yaml:"initialize_timeout"`
 	// MaxResultBytes is a hard safety net. If result exceeds this AND page_size is
 	// also larger, the response is truncated with truncated=true + hint.
 	// Set to 0 to disable. Default: 256 KiB.
@@ -85,6 +90,9 @@ func (c *Config) defaults() {
 	}
 	if c.Proxy.ExecTimeout == 0 {
 		c.Proxy.ExecTimeout = 60 * time.Second
+	}
+	if c.Proxy.InitializeTimeout == 0 {
+		c.Proxy.InitializeTimeout = 10 * time.Second
 	}
 	if c.Proxy.MaxResultBytes == 0 {
 		c.Proxy.MaxResultBytes = 262144 // 256 KiB
