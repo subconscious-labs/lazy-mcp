@@ -32,6 +32,20 @@ type SearchHit struct {
 	Score float64
 }
 
+// SearchWarning describes a query term that matched server metadata but no
+// catalog entry — usually because the server's catalog is empty or stale.
+type SearchWarning struct {
+	Server string   `json:"server"`
+	Terms  []string `json:"terms"`
+	Reason string   `json:"reason"`
+}
+
+// SearchResult bundles hits and warnings.
+type SearchResult struct {
+	Hits     []SearchHit
+	Warnings []SearchWarning
+}
+
 // Catalog holds all indexed tools.
 type Catalog struct {
 	cfg    *config.Config
@@ -128,25 +142,104 @@ func (c *Catalog) ServerStale(serverName string) bool {
 	return time.Since(t) > ttl
 }
 
-// Search returns top-N scored hits for query.
-func (c *Catalog) Search(query string, limit int) []SearchHit {
+type matchKind int
+
+const (
+	matchNone matchKind = iota
+	matchCatalog
+	matchServer
+)
+
+// Search returns scored hits for query plus warnings for terms that matched
+// only server metadata (e.g. a broken server's description or tags).
+//
+// Semantics: a word that matches nothing anywhere (neither catalog nor server
+// metadata) disqualifies the whole query. A word that matches only server
+// metadata contributes no score but does not disqualify; instead it yields
+// a warning about that server.
+func (c *Catalog) Search(query string, limit int) SearchResult {
+	q := strings.ToLower(strings.TrimSpace(query))
+	if q == "" {
+		return SearchResult{Hits: c.allHits(limit)}
+	}
+	words := strings.Fields(q)
+	if len(words) == 0 {
+		return SearchResult{Hits: c.allHits(limit)}
+	}
+
 	c.mu.RLock()
 	entries := c.entries
 	c.mu.RUnlock()
 
-	q := strings.ToLower(strings.TrimSpace(query))
+	matches := make([]matchKind, len(words))
+	serverTerms := map[string][]string{} // server name -> terms matched
+
+	for i, w := range words {
+		for _, e := range entries {
+			if wordMatchesEntry(w, e) {
+				matches[i] = matchCatalog
+				break
+			}
+		}
+		if matches[i] == matchCatalog {
+			continue
+		}
+		for _, srv := range c.cfg.EnabledServers() {
+			if wordMatchesServerMeta(w, srv.Name, srv.Description, srv.Tags) {
+				matches[i] = matchServer
+				serverTerms[srv.Name] = append(serverTerms[srv.Name], w)
+				break
+			}
+		}
+	}
+
+	// Any word matched nowhere → empty result.
+	for _, m := range matches {
+		if m == matchNone {
+			return SearchResult{}
+		}
+	}
+
 	var hits []SearchHit
 	for _, e := range entries {
-		s := score(q, e)
+		var s float64
+		for _, w := range words {
+			s += scoreWord(w, e)
+		}
 		if s > 0 {
 			hits = append(hits, SearchHit{Entry: e, Score: s})
 		}
 	}
-	// simple insertion sort for small N
+	// insertion sort for small N
 	for i := 1; i < len(hits); i++ {
 		for j := i; j > 0 && hits[j].Score > hits[j-1].Score; j-- {
 			hits[j], hits[j-1] = hits[j-1], hits[j]
 		}
+	}
+	if limit > 0 && len(hits) > limit {
+		hits = hits[:limit]
+	}
+
+	var warnings []SearchWarning
+	for srv, terms := range serverTerms {
+		warnings = append(warnings, SearchWarning{
+			Server: srv,
+			Terms:  terms,
+			Reason: "matched server metadata but no tools are indexed (catalog unavailable or empty)",
+		})
+	}
+
+	return SearchResult{Hits: hits, Warnings: warnings}
+}
+
+// allHits returns all entries with uniform score, for the empty-query case.
+func (c *Catalog) allHits(limit int) []SearchHit {
+	c.mu.RLock()
+	entries := c.entries
+	c.mu.RUnlock()
+	hits := make([]SearchHit, 0, len(entries))
+	for _, e := range entries {
+		hits = append(hits, SearchHit{Entry: e, Score: 1})
 	}
 	if limit > 0 && len(hits) > limit {
 		hits = hits[:limit]

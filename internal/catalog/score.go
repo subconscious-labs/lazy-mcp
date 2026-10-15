@@ -2,77 +2,63 @@ package catalog
 
 import "strings"
 
-// score returns a relevance score for query q against entry e.
-// Higher = more relevant. 0 = no match.
-//
-// The query is tokenized on whitespace; each word is scored independently
-// against the tool name, ref, server, tags and summary. Multi-word queries
-// therefore match an entry whose description contains those words in any
-// order and with arbitrary text between them.
-func score(q string, e ToolEntry) float64 {
-	q = strings.ToLower(strings.TrimSpace(q))
-	if q == "" {
-		return 1 // empty query matches everything
-	}
-	words := strings.Fields(q)
-	if len(words) == 0 {
-		return 1
-	}
-
+// scoreWord returns the relevance of a single query word w against e.
+// Returns 0 if w doesn't match anything in e.
+func scoreWord(w string, e ToolEntry) float64 {
 	toolLower := strings.ToLower(e.Tool)
 	refLower := strings.ToLower(e.Ref)
 	serverLower := strings.ToLower(e.Server)
 	summaryLower := strings.ToLower(e.Summary)
-	tagsLower := make([]string, len(e.Tags))
-	for i, t := range e.Tags {
-		tagsLower[i] = strings.ToLower(t)
-	}
 
 	var s float64
-	matched := 0
-	for _, w := range words {
-		var wordScore float64
-		// Exact tool name or ref is the strongest signal.
-		if toolLower == w {
-			wordScore += 5
-		}
-		if refLower == w {
-			wordScore += 5
-		}
-		// Prefix and substring on the tool name.
-		if strings.HasPrefix(toolLower, w) {
-			wordScore += 3
-		}
-		if strings.Contains(toolLower, w) {
-			wordScore += 2
-		}
-		// Ref / server / tags / summary — narrower weights.
-		if strings.Contains(refLower, w) {
-			wordScore += 1.5
-		}
-		for _, t := range tagsLower {
-			if strings.Contains(t, w) {
-				wordScore += 1.5
-				break
-			}
-		}
-		if strings.Contains(serverLower, w) {
-			wordScore += 1
-		}
-		if strings.Contains(summaryLower, w) {
-			wordScore += 1
-		}
-		if wordScore > 0 {
-			matched++
-			s += wordScore
+	if toolLower == w {
+		s += 5
+	}
+	if refLower == w {
+		s += 5
+	}
+	if strings.HasPrefix(toolLower, w) {
+		s += 3
+	}
+	if strings.Contains(toolLower, w) {
+		s += 2
+	}
+	if strings.Contains(refLower, w) {
+		s += 1.5
+	}
+	for _, t := range e.Tags {
+		if strings.Contains(strings.ToLower(t), w) {
+			s += 1.5
+			break
 		}
 	}
-
-	// Require every word to match something. A single unmatched word drops
-	// the entry: "ssh password" should not surface ssh_exec just because
-	// "ssh" matched.
-	if matched < len(words) {
-		return 0
+	if strings.Contains(serverLower, w) {
+		s += 1
+	}
+	if strings.Contains(summaryLower, w) {
+		s += 1
 	}
 	return s
+}
+
+// wordMatchesEntry reports whether w has any relevance to e.
+func wordMatchesEntry(w string, e ToolEntry) bool {
+	return scoreWord(w, e) > 0
+}
+
+// wordMatchesServerMeta reports whether w matches a server's own metadata
+// (name, description, tags) rather than its tools.
+func wordMatchesServerMeta(w, serverName, serverDescription string, serverTags []string) bool {
+	if strings.Contains(strings.ToLower(serverName), w) {
+		return true
+	}
+	if strings.Contains(strings.ToLower(serverDescription), w) {
+		return true
+	}
+	for _, t := range serverTags {
+		if strings.Contains(strings.ToLower(t), w) {
+			return true
+		}
+	}
+	return false
 }

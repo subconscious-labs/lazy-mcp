@@ -35,7 +35,8 @@ func New(cfg *config.Config, brok *broker.Broker, cat *catalog.Catalog, log *log
 }
 
 // Search finds tools matching query.
-// args: {"query": "...", "tags": ["..."], "limit": N}
+// args: {"query": "...", "limit": N}
+// Response: {"hits": [...], "warnings": [...]}
 func (h *Handlers) Search(ctx context.Context, args map[string]any) (string, error) {
 	query, _ := args["query"].(string)
 	limit := h.cfg.Proxy.MaxSearchResults
@@ -43,8 +44,6 @@ func (h *Handlers) Search(ctx context.Context, args map[string]any) (string, err
 		limit = int(l)
 	}
 
-	// Refresh only the servers whose cached tool list is stale (or missing).
-	// On a warm catalog this is a no-op.
 	for _, srv := range h.cfg.EnabledServers() {
 		if h.cat.ServerStale(srv.Name) {
 			if err := h.cat.RefreshServer(ctx, srv.Name); err != nil {
@@ -53,7 +52,8 @@ func (h *Handlers) Search(ctx context.Context, args map[string]any) (string, err
 		}
 	}
 
-	hits := h.cat.Search(query, limit)
+	result := h.cat.Search(query, limit)
+
 	type hitOut struct {
 		Ref       string   `json:"tool_ref"`
 		Server    string   `json:"server"`
@@ -63,19 +63,24 @@ func (h *Handlers) Search(ctx context.Context, args map[string]any) (string, err
 		InputHint string   `json:"input_hint,omitempty"`
 		Dangerous bool     `json:"dangerous,omitempty"`
 	}
-	var out []hitOut
-	for _, h := range hits {
-		out = append(out, hitOut{
-			Ref:       h.Entry.Ref,
-			Server:    h.Entry.Server,
-			Tool:      h.Entry.Tool,
-			Summary:   h.Entry.Summary,
-			Tags:      h.Entry.Tags,
-			InputHint: h.Entry.InputHint,
-			Dangerous: h.Entry.Dangerous,
+	hits := make([]hitOut, 0, len(result.Hits))
+	for _, hit := range result.Hits {
+		hits = append(hits, hitOut{
+			Ref:       hit.Entry.Ref,
+			Server:    hit.Entry.Server,
+			Tool:      hit.Entry.Tool,
+			Summary:   hit.Entry.Summary,
+			Tags:      hit.Entry.Tags,
+			InputHint: hit.Entry.InputHint,
+			Dangerous: hit.Entry.Dangerous,
 		})
 	}
-	b, err := json.MarshalIndent(out, "", "  ")
+
+	envelope := map[string]any{"hits": hits}
+	if len(result.Warnings) > 0 {
+		envelope["warnings"] = result.Warnings
+	}
+	b, err := json.MarshalIndent(envelope, "", "  ")
 	if err != nil {
 		return "", err
 	}

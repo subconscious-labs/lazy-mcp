@@ -157,7 +157,7 @@ func (s *Server) toolManifest(prefix string) []map[string]any {
 	return []map[string]any{
 		{
 			"name":        prefix + "_search",
-			"description": "Search for tools across all registered MCP backends. Returns compact tool refs with summaries. Use this first to discover available tools.",
+						"description": "Search for tools across all registered MCP backends. Returns {hits: [...], warnings: [...]}. warnings appear when a query term matches an enabled server's metadata but that server has no tools indexed (e.g. it is down). Use this first to discover available tools.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
