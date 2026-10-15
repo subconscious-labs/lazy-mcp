@@ -24,6 +24,24 @@ type ToolEntry struct {
 	InputHint   string // compact one-liner from inputSchema
 	InputSchema []byte // full schema for describe_tool
 	Dangerous   bool
+
+	// Precomputed lowercase views for fast scoring.
+	toolLower    string
+	refLower     string
+	serverLower  string
+	summaryLower string
+	tagsLower    []string
+}
+
+func (e *ToolEntry) computeLower() {
+	e.toolLower = strings.ToLower(e.Tool)
+	e.refLower = strings.ToLower(e.Ref)
+	e.serverLower = strings.ToLower(e.Server)
+	e.summaryLower = strings.ToLower(e.Summary)
+	e.tagsLower = make([]string, len(e.Tags))
+	for i, t := range e.Tags {
+		e.tagsLower[i] = strings.ToLower(t)
+	}
 }
 
 // SearchHit is a ranked result from Search.
@@ -97,7 +115,7 @@ func (c *Catalog) RefreshServer(ctx context.Context, serverName string) error {
 
 	var entries []ToolEntry
 	for _, t := range tools {
-		entries = append(entries, ToolEntry{
+		entry := ToolEntry{
 			Ref:         serverName + "/" + t.Name,
 			Server:      serverName,
 			Tool:        t.Name,
@@ -106,7 +124,9 @@ func (c *Catalog) RefreshServer(ctx context.Context, serverName string) error {
 			InputHint:   extractInputHint(t.InputSchema),
 			InputSchema: t.InputSchema,
 			Dangerous:   dangerSet[t.Name],
-		})
+		}
+		entry.computeLower()
+		entries = append(entries, entry)
 	}
 
 	c.mu.Lock()

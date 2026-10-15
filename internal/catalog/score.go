@@ -3,39 +3,36 @@ package catalog
 import "strings"
 
 // scoreWord returns the relevance of a single query word w against e.
-// Returns 0 if w doesn't match anything in e.
+// All lowercase views are precomputed on ToolEntry, so this performs no
+// allocations.
 func scoreWord(w string, e ToolEntry) float64 {
-	toolLower := strings.ToLower(e.Tool)
-	refLower := strings.ToLower(e.Ref)
-	serverLower := strings.ToLower(e.Server)
-	summaryLower := strings.ToLower(e.Summary)
-
 	var s float64
-	if toolLower == w {
+
+	if e.toolLower == w {
 		s += 5
 	}
-	if refLower == w {
+	if e.refLower == w {
 		s += 5
 	}
-	if strings.HasPrefix(toolLower, w) {
+	if strings.HasPrefix(e.toolLower, w) {
 		s += 3
 	}
-	if strings.Contains(toolLower, w) {
+	if strings.Contains(e.toolLower, w) {
 		s += 2
 	}
-	if strings.Contains(refLower, w) {
+	if strings.Contains(e.refLower, w) {
 		s += 1.5
 	}
-	for _, t := range e.Tags {
-		if strings.Contains(strings.ToLower(t), w) {
+	for _, t := range e.tagsLower {
+		if strings.Contains(t, w) {
 			s += 1.5
 			break
 		}
 	}
-	if strings.Contains(serverLower, w) {
+	if strings.Contains(e.serverLower, w) {
 		s++
 	}
-	if strings.Contains(summaryLower, w) {
+	if strings.Contains(e.summaryLower, w) {
 		s++
 	}
 	return s
@@ -43,11 +40,32 @@ func scoreWord(w string, e ToolEntry) float64 {
 
 // wordMatchesEntry reports whether w has any relevance to e.
 func wordMatchesEntry(w string, e ToolEntry) bool {
-	return scoreWord(w, e) > 0
+	if e.toolLower == w || e.refLower == w {
+		return true
+	}
+	if strings.Contains(e.toolLower, w) {
+		return true
+	}
+	if strings.Contains(e.refLower, w) {
+		return true
+	}
+	for _, t := range e.tagsLower {
+		if strings.Contains(t, w) {
+			return true
+		}
+	}
+	if strings.Contains(e.serverLower, w) {
+		return true
+	}
+	if strings.Contains(e.summaryLower, w) {
+		return true
+	}
+	return false
 }
 
 // wordMatchesServerMeta reports whether w matches a server's own metadata
-// (name, description, tags) rather than its tools.
+// (name, description, tags) rather than its tools. This path is not on the
+// hot loop (server count is small), so it lowercases on the fly.
 func wordMatchesServerMeta(w, serverName, serverDescription string, serverTags []string) bool {
 	if strings.Contains(strings.ToLower(serverName), w) {
 		return true

@@ -2,6 +2,28 @@ package catalog
 
 import "testing"
 
+func TestComputeLower_Idempotent(t *testing.T) {
+	e := ToolEntry{
+		Ref:     "SSH/SSH_Exec",
+		Server:  "SSH",
+		Tool:    "SSH_Exec",
+		Summary: "Mixed Case Summary",
+		Tags:    []string{"SSH", "Exec"},
+	}
+	e.computeLower()
+	first := e.toolLower
+	e.computeLower()
+	if e.toolLower != first {
+		t.Fatal("computeLower should be idempotent")
+	}
+	if e.toolLower != "ssh_exec" {
+		t.Fatalf("unexpected lower: %q", e.toolLower)
+	}
+	if e.tagsLower[0] != "ssh" || e.tagsLower[1] != "exec" {
+		t.Fatalf("tags not lowercased: %v", e.tagsLower)
+	}
+}
+
 func TestScoreWord_Name(t *testing.T) {
 	e := ToolEntry{
 		Ref:     "ssh/ssh_exec",
@@ -10,11 +32,37 @@ func TestScoreWord_Name(t *testing.T) {
 		Summary: "Execute a command on a remote host via SSH",
 		Tags:    []string{"ssh"},
 	}
+	e.computeLower()
+
 	if got := scoreWord("ssh_exec", e); got <= 0 {
 		t.Fatalf("exact name should match, got %v", got)
 	}
 	if got := scoreWord("zzz", e); got != 0 {
 		t.Fatalf("no match expected, got %v", got)
+	}
+}
+
+func TestWordMatchesEntry(t *testing.T) {
+	e := ToolEntry{
+		Ref:     "ssh/ssh_exec",
+		Server:  "ssh",
+		Tool:    "ssh_exec",
+		Summary: "Execute a command on a remote host via SSH",
+		Tags:    []string{"ssh", "exec"},
+	}
+	e.computeLower()
+
+	yes := []string{"ssh", "ssh_exec", "exec", "command", "host", "remote"}
+	for _, w := range yes {
+		if !wordMatchesEntry(w, e) {
+			t.Errorf("wordMatchesEntry(%q) = false, want true", w)
+		}
+	}
+	no := []string{"zzz", "database", "totally-unrelated"}
+	for _, w := range no {
+		if wordMatchesEntry(w, e) {
+			t.Errorf("wordMatchesEntry(%q) = true, want false", w)
+		}
 	}
 }
 
