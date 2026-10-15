@@ -54,11 +54,11 @@ func testServer(name string, env map[string]string) config.ServerConfig {
 // testBroker builds a Broker with tight timeouts suitable for tests.
 // circuitThreshold / cooldown are overridable via opts.
 type brokerOpts struct {
-	execTimeout       time.Duration
-	initTimeout       time.Duration
-	circuitThreshold  int
-	circuitCooldown   time.Duration
-	circuitDisabled   bool
+	execTimeout      time.Duration
+	initTimeout      time.Duration
+	circuitThreshold int
+	circuitCooldown  time.Duration
+	circuitDisabled  bool
 }
 
 func newTestBroker(t *testing.T, servers []config.ServerConfig, opts brokerOpts) *Broker {
