@@ -169,16 +169,32 @@ func (c *Config) Server(name string) (ServerConfig, bool) {
 	return ServerConfig{}, false
 }
 
-// Load reads and parses a YAML config file.
+// Load reads, expands and parses a YAML config file.
+//
+// Before decoding, every string scalar is passed through ${...}
+// expansion: environment variables and file contents can stand in for
+// literal values, so secrets never need to be written to config.yaml.
+// See expand.go for the supported syntax.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config %q: %w", path, err)
 	}
-	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
 		return nil, fmt.Errorf("parse config %q: %w", path, err)
 	}
+
+	if err := defaultExpander().expandNode(&root); err != nil {
+		return nil, fmt.Errorf("expand config %q: %w", path, err)
+	}
+
+	var cfg Config
+	if err := root.Decode(&cfg); err != nil {
+		return nil, fmt.Errorf("decode config %q: %w", path, err)
+	}
+
 	cfg.defaults()
 	if err := cfg.validate(); err != nil {
 		return nil, fmt.Errorf("validate config %q: %w", path, err)

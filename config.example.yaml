@@ -1,5 +1,26 @@
 version: 1
 
+# Substitutions
+# -------------
+# Any string value in this file may reference the environment or a file:
+#
+#   ${NAME}              required env var (error if unset or empty)
+#   ${NAME:-default}     default if unset or empty
+#   ${NAME:?message}     required, custom error message
+#   ${file:/path}        file contents (trailing newlines stripped)
+#   $$                   literal '$'
+#
+# Example (secrets stay out of the file):
+#
+#   servers:
+#     - name: dav
+#       env:
+#         DAV_PASSWORD: "${file:/run/secrets/dav_pass}"
+#         DAV_USERNAME: "${DAV_USERNAME:?set DAV_USERNAME}"
+#
+# Expanded after YAML parsing; values that look like bools or numbers
+# after expansion are re-tagged so `enabled: ${SVC_ENABLED}` works.
+
 proxy:
   # Prefix for meta-tool names exposed to the model
   tool_prefix: "meta"
