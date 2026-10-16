@@ -3,12 +3,15 @@ package meta
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
 )
 
-// pagedResult holds pre-split pages for a single call result.
+// pagedResult holds all pages of a single call result.
 type pagedResult struct {
 	pages     []string
 	createdAt time.Time
@@ -16,6 +19,11 @@ type pagedResult struct {
 
 // PageStore stores cursor → pagedResult with TTL-based expiry.
 // All methods are safe for concurrent use.
+//
+// A cursor has the form "<session-id>.<page-index>" where page-index is
+// 1-based. The first page is returned directly by Store; subsequent pages
+// are addressed by cursor and are idempotent — repeating a request with
+// the same cursor yields the same page.
 type PageStore struct {
 	mu      sync.Mutex
 	entries map[string]*pagedResult
@@ -48,7 +56,6 @@ func (ps *PageStore) Store(content string, pageSize int) (firstPage, cursor stri
 			pages = append(pages, content)
 			break
 		}
-		// Split on newline boundary near pageSize to avoid cutting JSON mid-token.
 		cut := pageSize
 		for i := pageSize - 1; i > pageSize/2; i-- {
 			if content[i] == '\n' {
@@ -58,7 +65,7 @@ func (ps *PageStore) Store(content string, pageSize int) (firstPage, cursor stri
 		}
 		// Back off to a rune boundary if no newline was found nearby.
 		// Stop at 1: cutting mid-rune is better than spinning forever.
-		if content[cut-1] != '\n' {
+		if cut > 0 && content[cut-1] != '\n' {
 			for cut > 1 && !utf8.RuneStart(content[cut]) {
 				cut--
 			}
@@ -71,43 +78,41 @@ func (ps *PageStore) Store(content string, pageSize int) (firstPage, cursor stri
 		return pages[0], "", false
 	}
 
-	cursor = newCursor()
+	id := newSessionID()
 	ps.mu.Lock()
-	ps.entries[cursor] = &pagedResult{
-		pages:     pages[1:], // first page returned directly
+	ps.entries[id] = &pagedResult{
+		pages:     pages,
 		createdAt: time.Now(),
 	}
 	ps.mu.Unlock()
 
-	return pages[0], cursor, true
+	return pages[0], cursorFor(id, 2), true
 }
 
-// Next returns the next page for cursor. Returns "", false if cursor unknown or expired.
+// Next returns the page indicated by cursor.
 func (ps *PageStore) Next(cursor string) (page, nextCursor string, hasMore bool, ok bool) {
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
-
-	pr, exists := ps.entries[cursor]
-	if !exists {
+	id, idx, err := parseCursor(cursor)
+	if err != nil {
 		return "", "", false, false
 	}
 
-	if len(pr.pages) == 0 {
-		delete(ps.entries, cursor)
-		return "", "", false, true
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+
+	pr, exists := ps.entries[id]
+	if !exists {
+		return "", "", false, false
+	}
+	if idx < 1 || idx > len(pr.pages) {
+		return "", "", false, false
 	}
 
-	page = pr.pages[0]
-	pr.pages = pr.pages[1:]
-
-	if len(pr.pages) == 0 {
-		delete(ps.entries, cursor)
-		return page, "", false, true
-	}
-
-	// Reuse the same cursor for remaining pages.
 	pr.createdAt = time.Now() // refresh TTL on access
-	return page, cursor, true, true
+	page = pr.pages[idx-1]
+	if idx < len(pr.pages) {
+		return page, cursorFor(id, idx+1), true, true
+	}
+	return page, "", false, true
 }
 
 func (ps *PageStore) reaper() {
@@ -132,8 +137,24 @@ func (ps *PageStore) reaper() {
 	}
 }
 
-func newCursor() string {
+func newSessionID() string {
 	b := make([]byte, 12)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+func cursorFor(id string, idx int) string {
+	return id + "." + strconv.Itoa(idx)
+}
+
+func parseCursor(c string) (id string, idx int, err error) {
+	i := strings.LastIndexByte(c, '.')
+	if i < 0 {
+		return "", 0, fmt.Errorf("malformed cursor")
+	}
+	idx, err = strconv.Atoi(c[i+1:])
+	if err != nil {
+		return "", 0, fmt.Errorf("malformed cursor index: %w", err)
+	}
+	return c[:i], idx, nil
 }

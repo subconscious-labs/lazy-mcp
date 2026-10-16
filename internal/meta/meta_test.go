@@ -267,6 +267,58 @@ func TestPageStore_MultiPage(t *testing.T) {
 	}
 }
 
+func TestPageStore_IdempotentCursor(t *testing.T) {
+	ps := NewPageStore(time.Minute)
+	content := strings.Repeat("line\n", 100) // 500 bytes
+	_, cur, more := ps.Store(content, 120)
+	if !more {
+		t.Fatal("expected multi-page")
+	}
+
+	// Fetch page 2 twice — must yield the same bytes.
+	page1, next1, _, ok := ps.Next(cur)
+	if !ok {
+		t.Fatal("first Next failed")
+	}
+	page2, next2, _, ok := ps.Next(cur)
+	if !ok {
+		t.Fatal("second Next failed")
+	}
+	if page1 != page2 {
+		t.Fatalf("cursor not idempotent:\nfirst=%q\nsecond=%q", page1, page2)
+	}
+	if next1 != next2 {
+		t.Fatalf("next_cursor differs across identical requests: %q vs %q", next1, next2)
+	}
+}
+
+func TestPageStore_NextByArbitraryIndex(t *testing.T) {
+	ps := NewPageStore(time.Minute)
+	content := strings.Repeat("line\n", 100)
+	_, cur, _ := ps.Store(content, 120)
+
+	// Extract session id from cur and jump to page 3 directly.
+	id, _, err := parseCursor(cur)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page3, _, _, ok := ps.Next(cursorFor(id, 3))
+	if !ok {
+		t.Fatal("direct page 3 fetch failed")
+	}
+	if page3 == "" {
+		t.Fatal("page 3 empty")
+	}
+}
+
+func TestParseCursor_RejectsGarbage(t *testing.T) {
+	for _, s := range []string{"", "nosep", "abc.def", "abc."} {
+		if _, _, err := parseCursor(s); err == nil {
+			t.Errorf("parseCursor(%q) should fail", s)
+		}
+	}
+}
+
 func TestPageStore_UnknownCursor(t *testing.T) {
 	ps := NewPageStore(time.Minute)
 	_, _, _, ok := ps.Next("nope")

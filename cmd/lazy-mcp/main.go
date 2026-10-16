@@ -62,7 +62,16 @@ func main() {
 		"servers", len(cfg.Servers),
 		"enabled", len(cfg.EnabledServers()),
 		"disabled", disabled,
-		"prefix", cfg.Proxy.ToolPrefix)
+		"prefix", cfg.Proxy.ToolPrefix,
+		"max_result_bytes", cfg.Proxy.MaxResultBytes,
+		"max_arguments_bytes", cfg.Proxy.MaxArgumentsBytes,
+		"default_page_size", cfg.Proxy.DefaultPageSize,
+		"exec_timeout", cfg.Proxy.ExecTimeout.String(),
+		"idle_ttl", cfg.Proxy.IdleTTL.String(),
+		"tool_cache_ttl", cfg.Proxy.ToolCacheTTL.String(),
+		"initialize_timeout", cfg.Proxy.InitializeTimeout.String(),
+		"shutdown_timeout", cfg.Proxy.ShutdownTimeout.String(),
+	)
 
 	brok := broker.New(cfg, log)
 	cat := catalog.New(cfg, brok, log)
