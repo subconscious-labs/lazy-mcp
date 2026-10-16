@@ -280,6 +280,14 @@ func (c *Collector) WriteFile(path string) error {
 		_ = tmp.Close()
 		return fmt.Errorf("write temp: %w", err)
 	}
+	// CreateTemp uses 0600. The .prom file must be readable by the
+	// node_exporter process, which runs under a different user. Chmod
+	// before close so the renamed file already has the correct mode —
+	// no window where the target is 0600.
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod temp: %w", err)
+	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close temp: %w", err)
 	}
