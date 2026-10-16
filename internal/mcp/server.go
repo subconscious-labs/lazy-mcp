@@ -169,7 +169,7 @@ func (s *Server) toolManifest(prefix string) []map[string]any {
 		},
 		{
 			"name":        prefix + "_call",
-			"description": "Call a backend tool by tool_ref (server/tool) or by server+tool. Returns {result, page?, has_more?, next_cursor?, hint?}. result is embedded as a JSON object/array when the backend returned JSON, otherwise as a string. When has_more is true, pass next_cursor back to fetch the next page. Large results are paginated automatically at proxy.max_result_bytes; the hint field explains when this happens.",
+			"description": "Call a backend tool by tool_ref (server/tool) or by server+tool. Returns {result, page?, has_more?, next_cursor?, hint?}. result is embedded as a JSON object/array when the backend returned JSON, otherwise as a string. Large results are paginated automatically at proxy.max_result_bytes; the hint field explains when this happens. When has_more is true, pass next_cursor back to fetch the next page. Pages are byte-level slices of the full result: concatenate them verbatim to reassemble the payload. Individual pages are not necessarily valid JSON.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
