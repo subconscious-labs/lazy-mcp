@@ -78,7 +78,11 @@ func (h *Handlers) Search(ctx context.Context, args map[string]any) (string, err
 		})
 	}
 
-	envelope := map[string]any{"hits": hits}
+	envelope := map[string]any{
+		"hits":     hits,
+		"total":    result.Total,
+		"has_more": len(result.Hits) < result.Total,
+	}
 	if len(result.Warnings) > 0 {
 		envelope["warnings"] = result.Warnings
 	}
@@ -95,7 +99,6 @@ type callResult struct {
 	NextCursor string `json:"next_cursor,omitempty"`
 	HasMore    bool   `json:"has_more,omitempty"`
 	Page       int    `json:"page,omitempty"`
-	Truncated  bool   `json:"truncated,omitempty"`
 	Hint       string `json:"hint,omitempty"`
 }
 
@@ -178,22 +181,30 @@ func (h *Handlers) callCursorNext(cursor string) (string, error) {
 	return string(b), nil
 }
 
-// buildResponse applies max_result_bytes safety net and pagination.
+// buildResponse applies the max_result_bytes safety net and pagination.
+//
+// Pagination sources, in priority order:
+//  1. User passed page_size explicitly (clamped down to max_result_bytes).
+//  2. No page size requested, but the result exceeds max_result_bytes.
+//     In this case we paginate at max_result_bytes and set a hint so the
+//     caller knows why a bare call suddenly returned a cursor.
+//
+// Truncation never happens: the entire result is always reachable via
+// next_cursor, so nothing is silently lost.
 func (h *Handlers) buildResponse(raw string, pageSize int) (string, error) {
 	maxBytes := h.cfg.Proxy.MaxResultBytes
-	// Safety net: if raw exceeds the hard limit, and pagination either disabled
-	// or set too coarse to help, truncate with a hint.
-	if maxBytes > 0 && len(raw) > maxBytes && (pageSize <= 0 || pageSize > maxBytes) {
-		truncated := truncateBytes(raw, maxBytes)
-		out := callResult{
-			Result:    wrapResult(truncated),
-			Truncated: true,
-			Hint:      fmt.Sprintf("result truncated at %d bytes; use page_size <= %d to paginate", maxBytes, maxBytes),
-		}
-		b, _ := json.MarshalIndent(out, "", "  ")
-		return string(b), nil
+	autoPaged := false
+
+	// Clamp user-requested page size down to the hard cap.
+	if maxBytes > 0 && pageSize > maxBytes {
+		pageSize = maxBytes
 	}
-	// Normal pagination via PageStore.
+	// Safety net: no pagination requested, but the result is too big.
+	if maxBytes > 0 && pageSize <= 0 && len(raw) > maxBytes {
+		pageSize = maxBytes
+		autoPaged = true
+	}
+
 	firstPage, cursor, hasMore := h.pager.Store(raw, pageSize)
 	out := callResult{
 		Result:     wrapResult(firstPage),
@@ -202,6 +213,11 @@ func (h *Handlers) buildResponse(raw string, pageSize int) (string, error) {
 	}
 	if hasMore {
 		out.Page = 1
+	}
+	if autoPaged {
+		out.Hint = fmt.Sprintf(
+			"result exceeds max_result_bytes (%d); paginated automatically — pass next_cursor to continue",
+			maxBytes)
 	}
 	b, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {

@@ -23,6 +23,7 @@ import (
 // The backend is healthy — this is a business-level result, not a
 // transport failure.
 var ErrToolError = errors.New("tool returned error")
+
 // ErrRPCClientError indicates the backend rejected the request itself
 // (parse error, invalid params, unknown method). The backend is healthy;
 // this is a caller-side mistake, not a transport failure.

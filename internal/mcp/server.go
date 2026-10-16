@@ -157,7 +157,7 @@ func (s *Server) toolManifest(prefix string) []map[string]any {
 	return []map[string]any{
 		{
 			"name":        prefix + "_search",
-			"description": "Search for tools across all registered MCP backends. Returns {hits: [...], warnings: [...]}. warnings appear when a query term matches an enabled server's metadata but that server has no tools indexed (e.g. it is down). Use this first to discover available tools.",
+			"description": "Search for tools across all registered MCP backends. Returns {hits, total, has_more, warnings?}. total is the full match count before limit; has_more is true when hits were truncated by limit. warnings appear when a query term matches an enabled server's metadata but that server has no tools indexed (e.g. it is down). Use this first to discover available tools.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -169,7 +169,7 @@ func (s *Server) toolManifest(prefix string) []map[string]any {
 		},
 		{
 			"name":        prefix + "_call",
-			"description": "Call a backend tool by tool_ref (server/tool) or by server+tool. Returns {result, page?, has_more?, next_cursor?, truncated?, hint?}. result is embedded as a JSON object/array when the backend returned JSON, otherwise as a string. When has_more is true, pass next_cursor back to fetch the next page.",
+			"description": "Call a backend tool by tool_ref (server/tool) or by server+tool. Returns {result, page?, has_more?, next_cursor?, hint?}. result is embedded as a JSON object/array when the backend returned JSON, otherwise as a string. When has_more is true, pass next_cursor back to fetch the next page. Large results are paginated automatically at proxy.max_result_bytes; the hint field explains when this happens.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -190,7 +190,7 @@ func (s *Server) toolManifest(prefix string) []map[string]any {
 		},
 		{
 			"name":        prefix + "_describe_tool",
-			"description": "Get full JSON schema and description for a tool ref. Use when you need exact argument names before calling.",
+			"description": "Get the full JSON schema and description for a tool ref. Returns {tool_ref, server, tool, summary, tags, input_schema, dangerous}. `dangerous` marks tools that warrant extra care before calling. Use when you need exact argument names.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{

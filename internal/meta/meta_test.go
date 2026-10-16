@@ -80,6 +80,9 @@ func TestBuildResponse_NoPageWhenSinglePage(t *testing.T) {
 	if _, ok := parsed["has_more"]; ok {
 		t.Fatalf("has_more should be omitted when false: %s", out)
 	}
+	if _, ok := parsed["hint"]; ok {
+		t.Fatalf("hint should be omitted when no auto-paging: %s", out)
+	}
 	if got := parsed["result"]; got != "short result" {
 		t.Fatalf("result: got %v", got)
 	}
@@ -105,6 +108,55 @@ func TestBuildResponse_PageWhenPaginating(t *testing.T) {
 	if parsed["next_cursor"] == "" {
 		t.Fatalf("next_cursor should be set")
 	}
+	if _, ok := parsed["hint"]; ok {
+		t.Fatalf("hint should be absent when user requested pagination: %s", out)
+	}
+}
+
+func TestBuildResponse_AutoPaginateOnMaxBytes(t *testing.T) {
+	h := newTestHandlers() // MaxResultBytes: 4096
+	// Result larger than MaxResultBytes, no page_size requested.
+	body := strings.Repeat("line\n", 2000) // 10000 bytes
+	out, err := h.buildResponse(body, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if parsed["has_more"] != true {
+		t.Fatalf("expected has_more: %s", out)
+	}
+	if parsed["next_cursor"] == "" {
+		t.Fatalf("expected next_cursor: %s", out)
+	}
+	if parsed["page"] != float64(1) {
+		t.Fatalf("page: got %v want 1", parsed["page"])
+	}
+	hint, _ := parsed["hint"].(string)
+	if !strings.Contains(hint, "max_result_bytes") {
+		t.Fatalf("hint should mention max_result_bytes, got: %q", hint)
+	}
+}
+
+func TestBuildResponse_NoAutoPageWhenFits(t *testing.T) {
+	h := newTestHandlers()
+	small := strings.Repeat("x", 100) // < MaxResultBytes 4096
+	out, err := h.buildResponse(small, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := parsed["has_more"]; ok {
+		t.Fatalf("has_more should be absent when result fits: %s", out)
+	}
+	if _, ok := parsed["hint"]; ok {
+		t.Fatalf("hint should be absent when no auto-paging: %s", out)
+	}
 }
 
 func TestBuildResponse_EmbedsJSONResult(t *testing.T) {
@@ -117,37 +169,12 @@ func TestBuildResponse_EmbedsJSONResult(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
 		t.Fatalf("invalid JSON: %v\n%s", err, out)
 	}
-	// result must be an embedded object, not a stringified one.
 	nested, ok := parsed["result"].(map[string]any)
 	if !ok {
 		t.Fatalf("result should be an object, got %T: %v", parsed["result"], parsed["result"])
 	}
 	if nested["status"] != "ok" {
 		t.Fatalf("unexpected nested: %v", nested)
-	}
-}
-
-func TestBuildResponse_TruncatedEmbedsJSON(t *testing.T) {
-	h := newTestHandlers()
-	// Valid JSON longer than 4096 bytes.
-	body := `{"items":[` + strings.Repeat(`"x",`, 2000) + `"y"]}`
-	if len(body) <= h.cfg.Proxy.MaxResultBytes {
-		t.Fatalf("test body too short: %d", len(body))
-	}
-	out, err := h.buildResponse(body, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var parsed map[string]any
-	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
-		t.Fatal(err)
-	}
-	if parsed["truncated"] != true {
-		t.Fatalf("truncated: got %v, want true", parsed["truncated"])
-	}
-	// Truncated body is invalid JSON (cut mid-string), so result must be string.
-	if _, isStr := parsed["result"].(string); !isStr {
-		t.Fatalf("truncated result should fall back to string, got %T", parsed["result"])
 	}
 }
 

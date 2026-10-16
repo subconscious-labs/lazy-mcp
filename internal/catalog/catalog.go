@@ -63,6 +63,7 @@ type SearchWarning struct {
 type SearchResult struct {
 	Hits     []SearchHit
 	Warnings []SearchWarning
+	Total    int // total matches before limit was applied
 }
 
 // Catalog holds all indexed tools.
@@ -183,11 +184,11 @@ const (
 func (c *Catalog) Search(query string, limit int) SearchResult {
 	q := strings.ToLower(strings.TrimSpace(query))
 	if q == "" {
-		return SearchResult{Hits: c.allHits(limit)}
+		return c.allHits(limit)
 	}
 	words := strings.Fields(q)
 	if len(words) == 0 {
-		return SearchResult{Hits: c.allHits(limit)}
+		return c.allHits(limit)
 	}
 
 	c.mu.RLock()
@@ -239,6 +240,8 @@ func (c *Catalog) Search(query string, limit int) SearchResult {
 			hits[j], hits[j-1] = hits[j-1], hits[j]
 		}
 	}
+
+	total := len(hits)
 	if limit > 0 && len(hits) > limit {
 		hits = hits[:limit]
 	}
@@ -252,11 +255,11 @@ func (c *Catalog) Search(query string, limit int) SearchResult {
 		})
 	}
 
-	return SearchResult{Hits: hits, Warnings: warnings}
+	return SearchResult{Hits: hits, Warnings: warnings, Total: total}
 }
 
 // allHits returns all entries with uniform score, for the empty-query case.
-func (c *Catalog) allHits(limit int) []SearchHit {
+func (c *Catalog) allHits(limit int) SearchResult {
 	c.mu.RLock()
 	entries := c.entries
 	c.mu.RUnlock()
@@ -264,10 +267,11 @@ func (c *Catalog) allHits(limit int) []SearchHit {
 	for _, e := range entries {
 		hits = append(hits, SearchHit{Entry: e, Score: 1})
 	}
+	total := len(hits)
 	if limit > 0 && len(hits) > limit {
 		hits = hits[:limit]
 	}
-	return hits
+	return SearchResult{Hits: hits, Total: total}
 }
 
 // Describe returns a ToolEntry by ref ("server/tool").
