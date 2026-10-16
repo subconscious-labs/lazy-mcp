@@ -12,6 +12,7 @@ import (
 	"github.com/nikita-popov/lazy-mcp/internal/broker"
 	"github.com/nikita-popov/lazy-mcp/internal/config"
 	"github.com/nikita-popov/lazy-mcp/internal/logx"
+	"github.com/nikita-popov/lazy-mcp/internal/observability"
 )
 
 // ToolEntry is a compact catalog entry for one tool.
@@ -140,6 +141,8 @@ func (c *Catalog) RefreshServer(ctx context.Context, serverName string) error {
 	c.entries = append(kept, entries...)
 	c.lastRefresh[serverName] = time.Now()
 	c.mu.Unlock()
+
+	observability.SetCatalogSize(serverName, len(entries))
 
 	c.log.Info("catalog refreshed", "server", serverName, "tools", len(entries))
 	return nil

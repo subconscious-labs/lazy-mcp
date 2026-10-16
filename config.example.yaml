@@ -29,6 +29,12 @@ proxy:
   cursor_ttl: 5m
   # Grace period for in-flight requests on SIGINT/SIGTERM.
   shutdown_timeout: 5s
+  # Prometheus metrics, written to a .prom file for node_exporter's
+  # textfile collector. Empty path disables metric collection entirely.
+  # metrics_interval is how often the file is rewritten; must be one of
+  # 15s, 30s, 60s.
+  metrics_file: ""
+  metrics_interval: 15s
   # Circuit breaker: isolate a backend after N consecutive transport-level
   # failures. Tool-level errors (isError:true) do NOT count.
   circuit_breaker:

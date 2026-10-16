@@ -65,7 +65,7 @@ func newTestHandlers() *Handlers {
 
 func TestBuildResponse_NoPageWhenSinglePage(t *testing.T) {
 	h := newTestHandlers()
-	out, err := h.buildResponse("short result", 0, 1)
+	out, err := h.buildResponse("short result", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestBuildResponse_NoPageWhenSinglePage(t *testing.T) {
 func TestBuildResponse_PageWhenPaginating(t *testing.T) {
 	h := newTestHandlers()
 	big := strings.Repeat("x", 10000)
-	out, err := h.buildResponse(big, 1000, 1)
+	out, err := h.buildResponse(big, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestBuildResponse_PageWhenPaginating(t *testing.T) {
 
 func TestBuildResponse_EmbedsJSONResult(t *testing.T) {
 	h := newTestHandlers()
-	out, err := h.buildResponse(`{"status":"ok","n":3}`, 0, 1)
+	out, err := h.buildResponse(`{"status":"ok","n":3}`, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestBuildResponse_TruncatedEmbedsJSON(t *testing.T) {
 	if len(body) <= h.cfg.Proxy.MaxResultBytes {
 		t.Fatalf("test body too short: %d", len(body))
 	}
-	out, err := h.buildResponse(body, 0, 1)
+	out, err := h.buildResponse(body, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

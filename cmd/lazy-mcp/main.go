@@ -3,9 +3,9 @@ package main
 import (
 	"context"
 	"errors"
-	"io"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -19,6 +19,7 @@ import (
 	"github.com/nikita-popov/lazy-mcp/internal/config"
 	"github.com/nikita-popov/lazy-mcp/internal/logx"
 	"github.com/nikita-popov/lazy-mcp/internal/mcp"
+	"github.com/nikita-popov/lazy-mcp/internal/observability"
 )
 
 func main() {
@@ -77,6 +78,31 @@ func main() {
 	}
 
 	brok.StartIdleReaper(ctx)
+
+	if cfg.Proxy.MetricsFile != "" {
+		col := observability.Default()
+		path := cfg.Proxy.MetricsFile
+		interval := cfg.Proxy.MetricsInterval
+		go func() {
+			write := func() {
+				if err := col.WriteFile(path); err != nil {
+					log.Warn("metrics write failed", "path", path, "err", err)
+				}
+			}
+			write()
+			ticker := time.NewTicker(interval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					write()
+				}
+			}
+		}()
+		log.Info("metrics writer started", "path", path, "interval", interval.String())
+	}
 
 	log.Info("ready", "transport", "stdio")
 

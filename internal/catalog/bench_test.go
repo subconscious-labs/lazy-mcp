@@ -2,12 +2,12 @@ package catalog
 
 import (
 	"fmt"
+	"io"
 	"testing"
 	"time"
 
 	"github.com/nikita-popov/lazy-mcp/internal/config"
 	"github.com/nikita-popov/lazy-mcp/internal/logx"
-	"io"
 )
 
 // benchEntry is a realistic ToolEntry used by all benchmarks.

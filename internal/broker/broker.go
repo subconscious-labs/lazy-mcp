@@ -11,6 +11,7 @@ import (
 
 	"github.com/nikita-popov/lazy-mcp/internal/config"
 	"github.com/nikita-popov/lazy-mcp/internal/logx"
+	"github.com/nikita-popov/lazy-mcp/internal/observability"
 )
 
 // ToolInfo is a normalized tool descriptor from a backend.
@@ -77,9 +78,16 @@ func (b *Broker) Ensure(ctx context.Context, serverName string) (Backend, error)
 	return proc, nil
 }
 
-// CallTool ensures the backend is running then calls a tool.
-// Applies the circuit breaker and the configured exec_timeout.
+// CallTool ensures the backend is running then calls a tool. Applies the
+// circuit breaker and the configured exec_timeout, and records metrics.
 func (b *Broker) CallTool(ctx context.Context, serverName, tool string, args map[string]any) (string, error) {
+	start := time.Now()
+	result, err := b.doCallTool(ctx, serverName, tool, args)
+	observability.ObserveCall(serverName, tool, callStatus(err), time.Since(start))
+	return result, err
+}
+
+func (b *Broker) doCallTool(ctx context.Context, serverName, tool string, args map[string]any) (string, error) {
 	origCtx := ctx
 
 	if err := b.gate(serverName); err != nil {
@@ -98,6 +106,24 @@ func (b *Broker) CallTool(ctx context.Context, serverName, tool string, args map
 	result, err := back.CallTool(callCtx, tool, args)
 	b.classify(origCtx, serverName, err)
 	return result, err
+}
+
+// callStatus maps an error to a metrics status label.
+func callStatus(err error) string {
+	if err == nil {
+		return observability.StatusOK
+	}
+	switch {
+	case errors.Is(err, ErrToolError):
+		return observability.StatusToolError
+	case errors.Is(err, ErrCircuitOpen):
+		return observability.StatusCircuitOpen
+	case errors.Is(err, context.DeadlineExceeded):
+		return observability.StatusTimeout
+	case errors.Is(err, context.Canceled):
+		return observability.StatusCanceled
+	}
+	return observability.StatusError
 }
 
 // ListTools ensures the backend is running then lists tools.
@@ -141,20 +167,16 @@ func (b *Broker) classify(ctx context.Context, serverName string, err error) {
 		return
 	}
 
-	// Successful round-trip. This includes tools that returned isError:true
-	// (that's a business error, not a backend failure) and errors wrapped in
-	// ToolError by the process layer.
 	if err == nil || errors.Is(err, ErrToolError) {
 		prevState, _ := c.snapshot()
 		c.recordSuccess()
+		observability.SetCircuit(serverName, observability.CircuitClosed)
 		if prevState != circuitClosed {
 			b.log.Info("circuit closed", "server", serverName)
 		}
 		return
 	}
 
-	// If the caller's own context was cancelled or its deadline expired,
-	// don't blame the backend.
 	if ctx.Err() != nil {
 		return
 	}
@@ -162,6 +184,7 @@ func (b *Broker) classify(ctx context.Context, serverName string, err error) {
 	prevState, prevFails := c.snapshot()
 	c.recordFailure(err)
 	newState, _ := c.snapshot()
+	observability.SetCircuit(serverName, observability.CircuitCode(newState.String()))
 	if newState != prevState {
 		b.log.Warn("circuit opened",
 			"server", serverName,
@@ -177,6 +200,7 @@ func (b *Broker) classify(ctx context.Context, serverName string, err error) {
 // circuitFor returns the circuit for serverName, or nil if disabled.
 func (b *Broker) circuitFor(serverName string) *circuit {
 	if !b.cfg.Proxy.CircuitBreaker.IsEnabled() {
+		observability.SetCircuit(serverName, observability.CircuitDisabled)
 		return nil
 	}
 	b.circuitsMu.Lock()
@@ -188,6 +212,7 @@ func (b *Broker) circuitFor(serverName string) *circuit {
 			b.cfg.Proxy.CircuitBreaker.Cooldown,
 		)
 		b.circuits[serverName] = c
+		observability.SetCircuit(serverName, observability.CircuitClosed)
 	}
 	return c
 }

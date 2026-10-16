@@ -141,7 +141,7 @@ func (h *Handlers) Call(ctx context.Context, args map[string]any) (string, error
 		return "", fmt.Errorf("call %s/%s: %w", server, tool, err)
 	}
 
-	return h.buildResponse(raw, pageSize, 1)
+	return h.buildResponse(raw, pageSize)
 }
 
 // callCursorNext fetches the next page for an existing cursor.
@@ -164,7 +164,7 @@ func (h *Handlers) callCursorNext(cursor string) (string, error) {
 }
 
 // buildResponse applies max_result_bytes safety net and pagination.
-func (h *Handlers) buildResponse(raw string, pageSize, pageNum int) (string, error) {
+func (h *Handlers) buildResponse(raw string, pageSize int) (string, error) {
 	maxBytes := h.cfg.Proxy.MaxResultBytes
 	// Safety net: if raw exceeds the hard limit, and pagination either disabled
 	// or set too coarse to help, truncate with a hint.
@@ -186,7 +186,7 @@ func (h *Handlers) buildResponse(raw string, pageSize, pageNum int) (string, err
 		HasMore:    hasMore,
 	}
 	if hasMore {
-		out.Page = pageNum
+		out.Page = 1
 	}
 	b, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {

@@ -35,6 +35,12 @@ type ProxyConfig struct {
 	// ShutdownTimeout is the grace period for in-flight requests on SIGINT/SIGTERM.
 	// Default: 5 seconds.
 	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
+	// MetricsFile is the path to a Prometheus exposition file, intended for
+	// node_exporter's textfile collector. Empty disables metric collection.
+	MetricsFile string `yaml:"metrics_file"`
+	// MetricsInterval controls how often MetricsFile is rewritten.
+	// Allowed values: 15s, 30s, 60s. Default: 15s.
+	MetricsInterval time.Duration `yaml:"metrics_interval"`
 	// CircuitBreaker isolates misbehaving backends.
 	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
 	// LogFile, if set, receives the same JSONL stream as stderr. Empty
@@ -116,6 +122,9 @@ func (c *Config) defaults() {
 	if c.Proxy.ShutdownTimeout == 0 {
 		c.Proxy.ShutdownTimeout = 5 * time.Second
 	}
+	if c.Proxy.MetricsInterval == 0 {
+		c.Proxy.MetricsInterval = 15 * time.Second
+	}
 	if c.Proxy.CircuitBreaker.FailureThreshold <= 0 {
 		c.Proxy.CircuitBreaker.FailureThreshold = 5
 	}
@@ -165,5 +174,23 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config %q: %w", path, err)
 	}
 	cfg.defaults()
+	if err := cfg.validate(); err != nil {
+		return nil, fmt.Errorf("validate config %q: %w", path, err)
+	}
 	return &cfg, nil
+}
+
+// validate checks constraints that yaml parsing alone cannot enforce.
+func (c *Config) validate() error {
+	if c.Proxy.MetricsFile != "" {
+		switch c.Proxy.MetricsInterval {
+		case 15 * time.Second, 30 * time.Second, 60 * time.Second:
+			// ok
+		default:
+			return fmt.Errorf(
+				"proxy.metrics_interval: must be 15s, 30s or 60s (got %s)",
+				c.Proxy.MetricsInterval)
+		}
+	}
+	return nil
 }

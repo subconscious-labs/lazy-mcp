@@ -16,6 +16,7 @@ import (
 
 	"github.com/nikita-popov/lazy-mcp/internal/config"
 	"github.com/nikita-popov/lazy-mcp/internal/logx"
+	"github.com/nikita-popov/lazy-mcp/internal/observability"
 )
 
 // ErrToolError indicates the tool itself returned isError:true.
@@ -94,6 +95,7 @@ func (p *backendProcess) start(ctx context.Context) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("exec %q: %w", p.cfg.Command, err)
 	}
+	observability.IncBackendStart(p.cfg.Name)
 
 	p.writeMu.Lock()
 	p.stdin = stdin
