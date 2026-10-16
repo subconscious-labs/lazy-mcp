@@ -25,7 +25,7 @@ func (l *Logger) log(level string, msg string, kv []any) {
 	}
 	for i := 0; i+1 < len(kv); i += 2 {
 		if k, ok := kv[i].(string); ok {
-			rec[k] = kv[i+1]
+			rec[k] = normalizeValue(kv[i+1])
 		}
 	}
 	b, _ := json.Marshal(rec)
@@ -55,4 +55,15 @@ func NewWithFile(stderr io.Writer, file Sink) (*Logger, io.Closer) {
 		return New(stderr), nil
 	}
 	return New(io.MultiWriter(stderr, file)), file
+}
+
+// normalizeValue unwraps error values into their string form so JSON
+// encoding does not collapse them to {}. Errors are the single most
+// useful field in a structured log line; a bare {} here loses the
+// actual failure text.
+func normalizeValue(v any) any {
+	if e, ok := v.(error); ok {
+		return e.Error()
+	}
+	return v
 }

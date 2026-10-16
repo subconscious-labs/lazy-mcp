@@ -3,6 +3,7 @@ package logx
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,3 +76,17 @@ func TestNewWithFile_WritesBoth(t *testing.T) {
 
 // fileSink lets a plain *os.File satisfy the Sink interface in tests.
 type fileSink struct{ *os.File }
+
+func TestLog_ErrorSerializedAsString(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf)
+	l.Warn("boom", "err", errors.New("dial tcp: connection refused"))
+
+	var rec map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &rec); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, buf.String())
+	}
+	if rec["err"] != "dial tcp: connection refused" {
+		t.Fatalf("err should be string, got %T: %v", rec["err"], rec["err"])
+	}
+}
