@@ -116,6 +116,8 @@ func callStatus(err error) string {
 	switch {
 	case errors.Is(err, ErrToolError):
 		return observability.StatusToolError
+	case errors.Is(err, ErrRPCClientError):
+		return observability.StatusClientError
 	case errors.Is(err, ErrCircuitOpen):
 		return observability.StatusCircuitOpen
 	case errors.Is(err, context.DeadlineExceeded):
@@ -167,7 +169,7 @@ func (b *Broker) classify(ctx context.Context, serverName string, err error) {
 		return
 	}
 
-	if err == nil || errors.Is(err, ErrToolError) {
+	if err == nil || errors.Is(err, ErrToolError) || errors.Is(err, ErrRPCClientError) {
 		prevState, _ := c.snapshot()
 		c.recordSuccess()
 		observability.SetCircuit(serverName, observability.CircuitClosed)

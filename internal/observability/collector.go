@@ -30,6 +30,7 @@ var defaultBounds = []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60}
 const (
 	StatusOK          = "ok"
 	StatusToolError   = "tool_error"
+	StatusClientError = "client_error"
 	StatusError       = "error"
 	StatusCircuitOpen = "circuit_open"
 	StatusTimeout     = "timeout"

@@ -23,6 +23,10 @@ import (
 // The backend is healthy — this is a business-level result, not a
 // transport failure.
 var ErrToolError = errors.New("tool returned error")
+// ErrRPCClientError indicates the backend rejected the request itself
+// (parse error, invalid params, unknown method). The backend is healthy;
+// this is a caller-side mistake, not a transport failure.
+var ErrRPCClientError = errors.New("rpc client error")
 
 type rpcMessage struct {
 	JSONRPC string          `json:"jsonrpc"`
@@ -233,6 +237,13 @@ func (p *backendProcess) request(ctx context.Context, method string, params any)
 			return nil, fmt.Errorf("backend closed during request")
 		}
 		if msg.Error != nil {
+			// JSON-RPC client-side error codes: the request itself was
+			// malformed or referred to unknown params. The backend is
+			// healthy; the caller must fix its input.
+			if msg.Error.Code >= -32700 && msg.Error.Code <= -32602 {
+				return nil, fmt.Errorf("%w: code %d: %s",
+					ErrRPCClientError, msg.Error.Code, msg.Error.Message)
+			}
 			return nil, fmt.Errorf("rpc error %d: %s", msg.Error.Code, msg.Error.Message)
 		}
 		return msg.Result, nil

@@ -456,3 +456,26 @@ func TestIdleReaper_FreshBackendNotKilled(t *testing.T) {
 		t.Fatal("freshly started backend should not be killed")
 	}
 }
+
+func TestCircuit_RPCClientErrorDoesNotTrip(t *testing.T) {
+	b := newTestBroker(t, []config.ServerConfig{
+		testServer("mock", map[string]string{
+			"MOCK_RPC_ERROR_CODE": "-32602",
+			"MOCK_RPC_ERROR_MSG":  "unknown field",
+		}),
+	}, brokerOpts{circuitThreshold: 2})
+
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		_, err := b.CallTool(ctx, "mock", "echo", nil)
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if !errors.Is(err, ErrRPCClientError) {
+			t.Fatalf("expected ErrRPCClientError, got %v", err)
+		}
+	}
+	if got := b.CircuitState("mock"); got != "closed" {
+		t.Fatalf("RPC client errors should not trip circuit, got %s", got)
+	}
+}

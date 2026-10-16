@@ -86,6 +86,17 @@ func main() {
 			if callDelay > 0 {
 				time.Sleep(callDelay)
 			}
+			if rpcCode, _ := strconv.Atoi(os.Getenv("MOCK_RPC_ERROR_CODE")); rpcCode != 0 {
+				_ = out.Encode(map[string]any{
+					"jsonrpc": "2.0",
+					"id":      *req.ID,
+					"error": map[string]any{
+						"code":    rpcCode,
+						"message": os.Getenv("MOCK_RPC_ERROR_MSG"),
+					},
+				})
+				continue
+			}
 			if callError != "" {
 				write(out, *req.ID, map[string]any{
 					"content": []map[string]any{{"type": "text", "text": callError}},
