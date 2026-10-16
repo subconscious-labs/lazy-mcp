@@ -22,6 +22,10 @@ proxy:
   # disabled (page_size <= 0) or when page_size itself exceeds this value.
   # Set to 0 to disable. Default: 262144 (256 KiB).
   max_result_bytes: 262144
+  # Hard cap on the size of meta_call's `arguments` payload, in bytes.
+  # Prevents a runaway model from shipping megabytes of base64 into a
+  # backend. -1 disables the check. Default: 262144 (256 KiB).
+  max_arguments_bytes: 262144
   # Default page size for meta_call when page_size is not passed explicitly.
   # 0 = pagination disabled.
   default_page_size: 0

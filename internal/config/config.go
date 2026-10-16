@@ -25,6 +25,9 @@ type ProxyConfig struct {
 	// also larger, the response is truncated with truncated=true + hint.
 	// Set to 0 to disable. Default: 256 KiB.
 	MaxResultBytes int `yaml:"max_result_bytes"`
+	// MaxArgumentsBytes caps the size of a marshalled `arguments` payload
+	// accepted by meta_call. 0 = unlimited. Default: 262144 (256 KiB).
+	MaxArgumentsBytes int `yaml:"max_arguments_bytes"`
 	// DefaultPageSize is used when meta_call is invoked without explicit page_size.
 	// Set to 0 to disable pagination (return full result unless MaxResultBytes kicks in).
 	// Default: 0 (disabled).
@@ -113,6 +116,9 @@ func (c *Config) defaults() {
 	}
 	if c.Proxy.MaxResultBytes == 0 {
 		c.Proxy.MaxResultBytes = 262144 // 256 KiB
+	}
+	if c.Proxy.MaxArgumentsBytes == 0 {
+		c.Proxy.MaxArgumentsBytes = 262144 // 256 KiB
 	}
 	// DefaultPageSize intentionally defaults to 0 (disabled);
 	// user opts in explicitly via config or per-call page_size.

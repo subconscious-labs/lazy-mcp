@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/nikita-popov/lazy-mcp/internal/broker"
@@ -121,7 +122,21 @@ func (h *Handlers) Call(ctx context.Context, args map[string]any) (string, error
 	}
 
 	toolArgs := extractArguments(args)
+
+	if limit := h.cfg.Proxy.MaxArgumentsBytes; limit > 0 {
+		b, err := json.Marshal(toolArgs)
+		if err != nil {
+			return "", fmt.Errorf("call: marshal arguments: %w", err)
+		}
+		if len(b) > limit {
+			return "", fmt.Errorf(
+				"call: arguments too large (%d bytes, limit %d); set proxy.max_arguments_bytes to raise",
+				len(b), limit)
+		}
+	}
+
 	pageSize := h.cfg.Proxy.DefaultPageSize
+
 	if ps, ok := args["page_size"].(float64); ok && int(ps) > 0 {
 		pageSize = int(ps)
 	}
@@ -309,13 +324,49 @@ func (h *Handlers) ListServers(_ context.Context, args map[string]any) (string, 
 	return string(b), nil
 }
 
+// splitRef parses "server/tool" into its two parts.
+//
+// Rules:
+//   - exactly one separator (the first '/'); the tool part may itself
+//     contain '/' so that tool names like "a/b" remain addressable
+//     via "server/a/b".
+//   - both parts must be non-empty and free of control characters.
+//   - neither part may exceed 256 bytes (server and tool identifiers
+//     are never longer in practice; a longer input is a typo or abuse).
 func splitRef(ref string) (server, tool string, err error) {
-	for i, c := range ref {
-		if c == '/' {
-			return ref[:i], ref[i+1:], nil
+	i := strings.IndexByte(ref, '/')
+	if i < 0 {
+		return "", "", fmt.Errorf("invalid tool_ref %q: expected server/tool", ref)
+	}
+	server, tool = ref[:i], ref[i+1:]
+
+	if err := validateRefPart("server", server); err != nil {
+		return "", "", fmt.Errorf("invalid tool_ref %q: %w", ref, err)
+	}
+	if err := validateRefPart("tool", tool); err != nil {
+		return "", "", fmt.Errorf("invalid tool_ref %q: %w", ref, err)
+	}
+	return server, tool, nil
+}
+
+const maxRefPartBytes = 256
+
+func validateRefPart(kind, part string) error {
+	if part == "" {
+		return fmt.Errorf("%s part is empty", kind)
+	}
+	if len(part) > maxRefPartBytes {
+		return fmt.Errorf("%s part exceeds %d bytes", kind, maxRefPartBytes)
+	}
+	if strings.TrimSpace(part) != part {
+		return fmt.Errorf("%s part has leading or trailing whitespace", kind)
+	}
+	for _, r := range part {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("%s part contains control character %q", kind, r)
 		}
 	}
-	return "", "", fmt.Errorf("invalid tool_ref %q: expected server/tool", ref)
+	return nil
 }
 
 // truncateBytes caps s to at most max bytes without splitting a UTF-8 rune.

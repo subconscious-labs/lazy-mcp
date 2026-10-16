@@ -22,6 +22,7 @@ func TestDefaults_EmptyProxy(t *testing.T) {
 		{"ToolCacheTTL", cfg.Proxy.ToolCacheTTL, 30 * time.Minute},
 		{"ExecTimeout", cfg.Proxy.ExecTimeout, 60 * time.Second},
 		{"MaxResultBytes", cfg.Proxy.MaxResultBytes, 262144},
+		{"MaxArgumentsBytes", cfg.Proxy.MaxArgumentsBytes, 262144},
 		{"CursorTTL", cfg.Proxy.CursorTTL, 5 * time.Minute},
 		{"ShutdownTimeout", cfg.Proxy.ShutdownTimeout, 5 * time.Second},
 		{"InitializeTimeout", cfg.Proxy.InitializeTimeout, 10 * time.Second},

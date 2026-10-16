@@ -2,6 +2,7 @@ package meta
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -244,5 +245,81 @@ func TestPageStore_UnknownCursor(t *testing.T) {
 	_, _, _, ok := ps.Next("nope")
 	if ok {
 		t.Fatal("unknown cursor should be rejected")
+	}
+}
+
+func TestSplitRef_RejectsInvalid(t *testing.T) {
+	tests := []struct {
+		name    string
+		in      string
+		wantErr string // substring of the expected error
+	}{
+		{"no slash", "no-slash", "expected server/tool"},
+		{"empty", "", "expected server/tool"},
+		{"empty server", "/tool", "server part is empty"},
+		{"empty tool", "server/", "tool part is empty"},
+		{"newline in server", "ser\nver/tool", "control character"},
+		{"newline in tool", "server/to\nol", "control character"},
+		{"nul in tool", "server/tool\x00", "control character"},
+		{"leading space", " server/tool", "whitespace"},
+		{"trailing space", "server/tool ", "whitespace"},
+		{"server too long", strings.Repeat("a", 300) + "/tool", "exceeds 256 bytes"},
+		{"tool too long", "server/" + strings.Repeat("a", 300), "exceeds 256 bytes"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, err := splitRef(tt.in)
+			if err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error %q does not contain %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestSplitRef_AcceptsValid(t *testing.T) {
+	tests := []struct {
+		in           string
+		server, tool string
+	}{
+		{"ssh/ssh_exec", "ssh", "ssh_exec"},
+		{"git/list_my_repositories", "git", "list_my_repositories"},
+		{"a/b/c", "a", "b/c"}, // tool names may contain '/'
+		{"server/tool-with-dash", "server", "tool-with-dash"},
+		{"server/tool.with.dots", "server", "tool.with.dots"},
+	}
+	for _, tt := range tests {
+		s, tool, err := splitRef(tt.in)
+		if err != nil {
+			t.Errorf("splitRef(%q) err=%v", tt.in, err)
+			continue
+		}
+		if s != tt.server || tool != tt.tool {
+			t.Errorf("splitRef(%q) = %q, %q; want %q, %q",
+				tt.in, s, tool, tt.server, tt.tool)
+		}
+	}
+}
+
+func TestCall_RejectsOversizedArguments(t *testing.T) {
+	h := &Handlers{
+		cfg: &config.Config{
+			Proxy: config.ProxyConfig{
+				MaxArgumentsBytes: 128,
+			},
+		},
+	}
+	big := strings.Repeat("x", 200)
+	_, err := h.Call(context.Background(), map[string]any{
+		"tool_ref":  "server/tool",
+		"arguments": map[string]any{"payload": big},
+	})
+	if err == nil {
+		t.Fatal("expected error for oversized arguments")
+	}
+	if !strings.Contains(err.Error(), "arguments too large") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
