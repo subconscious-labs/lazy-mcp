@@ -1,9 +1,11 @@
 .PHONY: build clean test test-race lint vet bench ci
 
+GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+LDFLAGS := -s -w -X github.com/nikita-popov/lazy-mcp/internal/observability.Version=$(GIT_COMMIT)
 BIN := bin/lazy-mcp
 
 build:
-	go build -trimpath -ldflags="-s -w" -o $(BIN) ./cmd/lazy-mcp
+	go build -trimpath -ldflags="$(LDFLAGS)" -o $(BIN) ./cmd/lazy-mcp
 
 clean:
 	rm -rf bin/

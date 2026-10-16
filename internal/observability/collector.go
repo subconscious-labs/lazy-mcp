@@ -19,7 +19,8 @@ import (
 )
 
 // Version is exposed as the lazy_mcp_info{version="..."} label.
-const Version = "0.1.0"
+// Overridden at build time via -ldflags "-X ...". Falls back to "dev".
+var Version = "dev"
 
 // defaultBounds are the histogram bucket upper bounds, in seconds.
 // Chosen to cover 10ms..60s with fine granularity in the 0.1..5s range,
