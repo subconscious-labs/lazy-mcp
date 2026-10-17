@@ -30,7 +30,7 @@ func benchCatalog(n int) *Catalog {
 			ToolCacheTTL: 30 * time.Minute,
 		},
 	}
-	c := New(cfg, nil, logx.New(io.Discard))
+	c := New(config.NewHolder(cfg), nil, logx.New(io.Discard))
 	c.entries = make([]ToolEntry, n)
 	for i := 0; i < n; i++ {
 		c.entries[i] = benchEntry(i)

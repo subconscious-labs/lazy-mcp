@@ -68,16 +68,16 @@ type SearchResult struct {
 
 // Catalog holds all indexed tools.
 type Catalog struct {
-	cfg         *config.Config
+	cfg         *config.Holder
 	brok        *broker.Broker
 	log         *logx.Logger
 	mu          sync.RWMutex
 	entries     []ToolEntry
-	lastRefresh map[string]time.Time // server name -> last successful refresh
+	lastRefresh map[string]time.Time
 }
 
 // New creates a Catalog.
-func New(cfg *config.Config, brok *broker.Broker, log *logx.Logger) *Catalog {
+func New(cfg *config.Holder, brok *broker.Broker, log *logx.Logger) *Catalog {
 	return &Catalog{
 		cfg:         cfg,
 		brok:        brok,
@@ -89,7 +89,7 @@ func New(cfg *config.Config, brok *broker.Broker, log *logx.Logger) *Catalog {
 // WarmUp fetches tools from all enabled servers.
 func (c *Catalog) WarmUp(ctx context.Context) error {
 	var lastErr error
-	for _, srv := range c.cfg.EnabledServers() {
+	for _, srv := range c.cfg.Get().EnabledServers() {
 		if err := c.RefreshServer(ctx, srv.Name); err != nil {
 			c.log.Warn("warmup refresh failed", "server", srv.Name, "err", err)
 			lastErr = err
@@ -100,7 +100,7 @@ func (c *Catalog) WarmUp(ctx context.Context) error {
 
 // RefreshServer fetches tools/list from a backend and updates the index.
 func (c *Catalog) RefreshServer(ctx context.Context, serverName string) error {
-	srvcfg, ok := c.cfg.Server(serverName)
+	srvcfg, ok := c.cfg.Get().Server(serverName)
 	if !ok {
 		return fmt.Errorf("catalog: server %q not found", serverName)
 	}
@@ -153,7 +153,7 @@ func (c *Catalog) RefreshServer(ctx context.Context, serverName string) error {
 // than proxy.tool_cache_ttl. Servers that were never refreshed count as stale.
 // ttl <= 0 disables staleness entirely (cache never expires).
 func (c *Catalog) ServerStale(serverName string) bool {
-	ttl := c.cfg.Proxy.ToolCacheTTL
+	ttl := c.cfg.Get().Proxy.ToolCacheTTL
 	if ttl <= 0 {
 		return false
 	}
@@ -208,7 +208,7 @@ func (c *Catalog) Search(query string, limit int) SearchResult {
 		if matches[i] == matchCatalog {
 			continue
 		}
-		for _, srv := range c.cfg.EnabledServers() {
+		for _, srv := range c.cfg.Get().EnabledServers() {
 			if wordMatchesServerMeta(w, srv.Name, srv.Description, srv.Tags) {
 				matches[i] = matchServer
 				serverTerms[srv.Name] = append(serverTerms[srv.Name], w)
@@ -326,4 +326,34 @@ func extractInputHint(schema []byte) string {
 		parts = append(parts, name+":"+t)
 	}
 	return strings.Join(parts, ", ")
+}
+
+// ApplyConfig removes entries and refresh records for servers that are
+// no longer enabled in cfg.
+func (c *Catalog) ApplyConfig(cfg *config.Config) {
+	enabled := make(map[string]bool, len(cfg.Servers))
+	for _, s := range cfg.EnabledServers() {
+		enabled[s.Name] = true
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	var kept []ToolEntry
+	for _, e := range c.entries {
+		if enabled[e.Server] {
+			kept = append(kept, e)
+		}
+	}
+	removed := len(c.entries) - len(kept)
+	c.entries = kept
+
+	for name := range c.lastRefresh {
+		if !enabled[name] {
+			delete(c.lastRefresh, name)
+		}
+	}
+	if removed > 0 {
+		c.log.Info("reload: dropped catalog entries", "count", removed)
+	}
 }

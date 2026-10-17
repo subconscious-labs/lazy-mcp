@@ -99,7 +99,7 @@ func newTestBroker(t *testing.T, servers []config.ServerConfig, opts brokerOpts)
 		Servers: servers,
 	}
 
-	b := New(cfg, logx.New(io.Discard))
+	b := New(config.NewHolder(cfg), logx.New(io.Discard))
 	t.Cleanup(b.StopAll)
 	return b
 }

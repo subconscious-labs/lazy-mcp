@@ -18,7 +18,7 @@ import (
 
 // Handlers holds dependencies for meta-tool execution.
 type Handlers struct {
-	cfg   *config.Config
+	cfg   *config.Holder
 	brok  *broker.Broker
 	cat   *catalog.Catalog
 	log   *logx.Logger
@@ -26,13 +26,13 @@ type Handlers struct {
 }
 
 // New creates Handlers.
-func New(cfg *config.Config, brok *broker.Broker, cat *catalog.Catalog, log *logx.Logger) *Handlers {
+func New(cfg *config.Holder, brok *broker.Broker, cat *catalog.Catalog, log *logx.Logger) *Handlers {
 	return &Handlers{
 		cfg:   cfg,
 		brok:  brok,
 		cat:   cat,
 		log:   log,
-		pager: NewPageStore(cfg.Proxy.CursorTTL),
+		pager: NewPageStore(cfg.Get().Proxy.CursorTTL),
 	}
 }
 
@@ -41,12 +41,12 @@ func New(cfg *config.Config, brok *broker.Broker, cat *catalog.Catalog, log *log
 // Response: {"hits": [...], "warnings": [...]}
 func (h *Handlers) Search(ctx context.Context, args map[string]any) (string, error) {
 	query, _ := args["query"].(string)
-	limit := h.cfg.Proxy.MaxSearchResults
+	limit := h.cfg.Get().Proxy.MaxSearchResults
 	if l, ok := args["limit"].(float64); ok && int(l) > 0 {
 		limit = int(l)
 	}
 
-	for _, srv := range h.cfg.EnabledServers() {
+	for _, srv := range h.cfg.Get().EnabledServers() {
 		if h.cat.ServerStale(srv.Name) {
 			if err := h.cat.RefreshServer(ctx, srv.Name); err != nil {
 				h.log.Warn("search: refresh failed", "server", srv.Name, "err", err)
@@ -126,7 +126,7 @@ func (h *Handlers) Call(ctx context.Context, args map[string]any) (string, error
 
 	toolArgs := extractArguments(args)
 
-	if limit := h.cfg.Proxy.MaxArgumentsBytes; limit > 0 {
+	if limit := h.cfg.Get().Proxy.MaxArgumentsBytes; limit > 0 {
 		b, err := json.Marshal(toolArgs)
 		if err != nil {
 			return "", fmt.Errorf("call: marshal arguments: %w", err)
@@ -138,7 +138,7 @@ func (h *Handlers) Call(ctx context.Context, args map[string]any) (string, error
 		}
 	}
 
-	pageSize := h.cfg.Proxy.DefaultPageSize
+	pageSize := h.cfg.Get().Proxy.DefaultPageSize
 
 	if ps, ok := args["page_size"].(float64); ok && int(ps) > 0 {
 		pageSize = int(ps)
@@ -192,7 +192,7 @@ func (h *Handlers) callCursorNext(cursor string) (string, error) {
 // Truncation never happens: the entire result is always reachable via
 // next_cursor, so nothing is silently lost.
 func (h *Handlers) buildResponse(raw string, pageSize int) (string, error) {
-	maxBytes := h.cfg.Proxy.MaxResultBytes
+	maxBytes := h.cfg.Get().Proxy.MaxResultBytes
 	autoPaged := false
 
 	// Clamp user-requested page size down to the hard cap.
@@ -294,9 +294,9 @@ func (h *Handlers) DescribeTool(ctx context.Context, args map[string]any) (strin
 func (h *Handlers) ListServers(_ context.Context, args map[string]any) (string, error) {
 	includeDisabled, _ := args["include_disabled"].(bool)
 
-	servers := h.cfg.EnabledServers()
+	servers := h.cfg.Get().EnabledServers()
 	if includeDisabled {
-		servers = h.cfg.Servers
+		servers = h.cfg.Get().Servers
 	}
 
 	type srvOut struct {

@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"sync"
 	"time"
 
@@ -30,7 +32,7 @@ type Backend interface {
 
 // Broker manages backends keyed by server name.
 type Broker struct {
-	cfg *config.Config
+	cfg *config.Holder
 	log *logx.Logger
 
 	mu   sync.Mutex
@@ -41,7 +43,7 @@ type Broker struct {
 }
 
 // New creates a Broker.
-func New(cfg *config.Config, log *logx.Logger) *Broker {
+func New(cfg *config.Holder, log *logx.Logger) *Broker {
 	return &Broker{
 		cfg:      cfg,
 		log:      log,
@@ -53,7 +55,9 @@ func New(cfg *config.Config, log *logx.Logger) *Broker {
 // Ensure returns a ready Backend for serverName, starting it if necessary.
 // The handshake (initialize) is bounded by proxy.initialize_timeout.
 func (b *Broker) Ensure(ctx context.Context, serverName string) (Backend, error) {
-	srvcfg, ok := b.cfg.Server(serverName)
+	cfg := b.cfg.Get()
+
+	srvcfg, ok := cfg.Server(serverName)
 	if !ok {
 		return nil, fmt.Errorf("broker: server %q not found in config", serverName)
 	}
@@ -69,7 +73,7 @@ func (b *Broker) Ensure(ctx context.Context, serverName string) (Backend, error)
 	}
 	b.mu.Unlock()
 
-	startCtx, cancel := context.WithTimeout(ctx, b.cfg.Proxy.InitializeTimeout)
+	startCtx, cancel := context.WithTimeout(ctx, cfg.Proxy.InitializeTimeout)
 	defer cancel()
 
 	if err := proc.Ensure(startCtx); err != nil {
@@ -150,8 +154,16 @@ func (b *Broker) ListTools(ctx context.Context, serverName string) ([]ToolInfo, 
 	return tools, err
 }
 
+// withExecTimeout wraps ctx with proxy.exec_timeout if configured.
+func (b *Broker) withExecTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	timeout := b.cfg.Get().Proxy.ExecTimeout
+	if timeout <= 0 {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
 // gate checks whether a call to serverName is currently allowed.
-// Returns ErrCircuitOpen (wrapped) if the circuit is open.
 func (b *Broker) gate(serverName string) error {
 	c := b.circuitFor(serverName)
 	if c == nil {
@@ -161,8 +173,6 @@ func (b *Broker) gate(serverName string) error {
 }
 
 // classify updates the circuit for serverName based on the outcome of a call.
-// origCtx is the caller's context before any timeout wrapper was applied —
-// used to distinguish client cancellation from our own exec_timeout.
 func (b *Broker) classify(ctx context.Context, serverName string, err error) {
 	c := b.circuitFor(serverName)
 	if c == nil {
@@ -188,10 +198,11 @@ func (b *Broker) classify(ctx context.Context, serverName string, err error) {
 	newState, _ := c.snapshot()
 	observability.SetCircuit(serverName, observability.CircuitCode(newState.String()))
 	if newState != prevState {
+		cooldown := b.cfg.Get().Proxy.CircuitBreaker.Cooldown
 		b.log.Warn("circuit opened",
 			"server", serverName,
 			"consecutive_failures", prevFails+1,
-			"cooldown", b.cfg.Proxy.CircuitBreaker.Cooldown.String())
+			"cooldown", cooldown.String())
 	} else if newState == circuitOpen {
 		b.log.Warn("circuit failure",
 			"server", serverName,
@@ -201,7 +212,8 @@ func (b *Broker) classify(ctx context.Context, serverName string, err error) {
 
 // circuitFor returns the circuit for serverName, or nil if disabled.
 func (b *Broker) circuitFor(serverName string) *circuit {
-	if !b.cfg.Proxy.CircuitBreaker.IsEnabled() {
+	cb := b.cfg.Get().Proxy.CircuitBreaker
+	if !cb.IsEnabled() {
 		observability.SetCircuit(serverName, observability.CircuitDisabled)
 		return nil
 	}
@@ -209,18 +221,15 @@ func (b *Broker) circuitFor(serverName string) *circuit {
 	defer b.circuitsMu.Unlock()
 	c, ok := b.circuits[serverName]
 	if !ok {
-		c = newCircuit(
-			b.cfg.Proxy.CircuitBreaker.FailureThreshold,
-			b.cfg.Proxy.CircuitBreaker.Cooldown,
-		)
+		c = newCircuit(cb.FailureThreshold, cb.Cooldown)
 		b.circuits[serverName] = c
 		observability.SetCircuit(serverName, observability.CircuitClosed)
 	}
 	return c
 }
 
-// CircuitState returns the current circuit state for a server ("closed",
-// "open", "half-open", or "disabled"). For use by status endpoints.
+// CircuitState returns the current circuit state for a server
+// ("closed", "open", "half-open", or "disabled").
 func (b *Broker) CircuitState(serverName string) string {
 	c := b.circuitFor(serverName)
 	if c == nil {
@@ -235,10 +244,11 @@ type ServerStatus struct {
 	Name         string
 	Running      bool
 	Circuit      string
-	LastToolCall time.Time // zero if never used
-	LastError    string    // last failure that tripped/last-updated the circuit
+	LastToolCall time.Time
+	LastError    string
 }
 
+// Status returns a snapshot of runtime state for serverName.
 func (b *Broker) Status(serverName string) ServerStatus {
 	b.mu.Lock()
 	proc := b.pool[serverName]
@@ -260,32 +270,62 @@ func (b *Broker) Status(serverName string) ServerStatus {
 	return st
 }
 
-// withExecTimeout wraps ctx with proxy.exec_timeout if configured.
-func (b *Broker) withExecTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
-	if b.cfg.Proxy.ExecTimeout <= 0 {
-		return context.WithCancel(ctx)
+// ApplyConfig reconciles the running pool with a new configuration.
+// Servers removed, disabled, or whose command/args/env changed are stopped.
+// Added servers and re-enabled servers start lazily on next Ensure.
+func (b *Broker) ApplyConfig(oldCfg, newCfg *config.Config) {
+	oldServers := make(map[string]config.ServerConfig, len(oldCfg.Servers))
+	for _, s := range oldCfg.Servers {
+		oldServers[s.Name] = s
 	}
-	return context.WithTimeout(ctx, b.cfg.Proxy.ExecTimeout)
+	newServers := make(map[string]config.ServerConfig, len(newCfg.Servers))
+	for _, s := range newCfg.Servers {
+		newServers[s.Name] = s
+	}
+
+	for name, oldSrv := range oldServers {
+		newSrv, stillExists := newServers[name]
+		if !stillExists || !newSrv.Enabled {
+			b.stopServer(name, "removed or disabled")
+			continue
+		}
+		if serverRestartRequired(oldSrv, newSrv) {
+			b.stopServer(name, "command/args/env changed")
+		}
+	}
 }
 
-// StopAll stops all running backends and clears the pool.
-func (b *Broker) StopAll() {
-	b.mu.Lock()
-	procs := b.pool
-	b.pool = make(map[string]*backendProcess)
-	b.mu.Unlock()
-
-	for name, proc := range procs {
-		b.log.Info("stopping backend", "server", name)
-		proc.Stop()
+func serverRestartRequired(a, c config.ServerConfig) bool {
+	if a.Command != c.Command {
+		return true
 	}
+	if !slices.Equal(a.Args, c.Args) {
+		return true
+	}
+	if !maps.Equal(a.Env, c.Env) {
+		return true
+	}
+	return false
+}
+
+func (b *Broker) stopServer(name, reason string) {
+	b.mu.Lock()
+	proc, exists := b.pool[name]
+	if exists {
+		delete(b.pool, name)
+	}
+	b.mu.Unlock()
+	if !exists {
+		return
+	}
+	b.log.Info("reload: stopping backend", "server", name, "reason", reason)
+	proc.Stop()
 }
 
 // StartIdleReaper launches a goroutine that periodically stops backends
-// idle longer than proxy.idle_ttl. The goroutine exits when ctx is done.
-// No-op if idle_ttl <= 0.
+// idle longer than proxy.idle_ttl. No-op if idle_ttl <= 0.
 func (b *Broker) StartIdleReaper(ctx context.Context) {
-	ttl := b.cfg.Proxy.IdleTTL
+	ttl := b.cfg.Get().Proxy.IdleTTL
 	if ttl <= 0 {
 		b.log.Info("idle reaper disabled", "idle_ttl", ttl.String())
 		return
@@ -335,5 +375,18 @@ func (b *Broker) reapIdle(ttl time.Duration) {
 				"server", name,
 				"idle_for", time.Since(last).String())
 		}
+	}
+}
+
+// StopAll stops all running backends and clears the pool.
+func (b *Broker) StopAll() {
+	b.mu.Lock()
+	procs := b.pool
+	b.pool = make(map[string]*backendProcess)
+	b.mu.Unlock()
+
+	for name, proc := range procs {
+		b.log.Info("stopping backend", "server", name)
+		proc.Stop()
 	}
 }

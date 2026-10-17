@@ -52,13 +52,11 @@ func (f *fakeHandlers) ListServers(ctx context.Context, args map[string]any) (st
 
 func testServer(t *testing.T, prefix string, h MetaHandlers) *Server {
 	t.Helper()
-	cfg := &config.Config{
-		Proxy: config.ProxyConfig{ToolPrefix: prefix},
-	}
+	cfg := &config.Config{Proxy: config.ProxyConfig{ToolPrefix: prefix}}
 	if h == nil {
 		h = &fakeHandlers{}
 	}
-	return newServer(cfg, h, logx.New(io.Discard))
+	return newServer(config.NewHolder(cfg), h, logx.New(io.Discard))
 }
 
 // runOnce feeds a raw JSONL request stream through Run and returns the

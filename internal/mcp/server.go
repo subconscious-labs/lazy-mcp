@@ -28,24 +28,20 @@ type MetaHandlers interface {
 
 // Server is the MCP stdio frontend.
 type Server struct {
-	cfg      *config.Config
+	cfg      *config.Holder
 	handlers MetaHandlers
 	log      *logx.Logger
 }
 
 // NewServer creates a Server.
-func NewServer(cfg *config.Config, brok *broker.Broker, cat *catalog.Catalog, log *logx.Logger) *Server {
+func NewServer(cfg *config.Holder, brok *broker.Broker, cat *catalog.Catalog, log *logx.Logger) *Server {
 	return newServer(cfg, meta.New(cfg, brok, cat, log), log)
 }
 
 // newServer is the constructor used by tests; it accepts any MetaHandlers
 // implementation.
-func newServer(cfg *config.Config, handlers MetaHandlers, log *logx.Logger) *Server {
-	return &Server{
-		cfg:      cfg,
-		handlers: handlers,
-		log:      log,
-	}
+func newServer(cfg *config.Holder, handlers MetaHandlers, log *logx.Logger) *Server {
+	return &Server{cfg: cfg, handlers: handlers, log: log}
 }
 
 // Run reads JSON-RPC from r and writes responses to w.
@@ -109,7 +105,7 @@ func (s *Server) Run(ctx context.Context, r io.Reader, w io.Writer) error {
 }
 
 func (s *Server) handle(ctx context.Context, id any, method string, params json.RawMessage) any {
-	prefix := s.cfg.Proxy.ToolPrefix
+	prefix := s.cfg.Get().Proxy.ToolPrefix
 
 	switch method {
 	case "initialize":

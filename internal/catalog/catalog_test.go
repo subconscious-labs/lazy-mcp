@@ -15,7 +15,7 @@ func testCatalogWithEntries(entries []ToolEntry) *Catalog {
 	cfg := &config.Config{
 		Proxy: config.ProxyConfig{ToolPrefix: "meta"},
 	}
-	c := New(cfg, nil, logx.New(io.Discard))
+	c := New(config.NewHolder(cfg), nil, logx.New(io.Discard))
 	c.entries = entries
 	return c
 }
@@ -92,7 +92,7 @@ func TestServerStale(t *testing.T) {
 	cfg := &config.Config{
 		Proxy: config.ProxyConfig{ToolCacheTTL: 100 * time.Millisecond},
 	}
-	c := New(cfg, nil, logx.New(io.Discard))
+	c := New(config.NewHolder(cfg), nil, logx.New(io.Discard))
 
 	// Never refreshed: stale.
 	if !c.ServerStale("srv") {
@@ -118,7 +118,7 @@ func TestServerStale_ZeroTTLNeverStale(t *testing.T) {
 	cfg := &config.Config{
 		Proxy: config.ProxyConfig{ToolCacheTTL: 0},
 	}
-	c := New(cfg, nil, logx.New(io.Discard))
+	c := New(config.NewHolder(cfg), nil, logx.New(io.Discard))
 	if c.ServerStale("never-seen") {
 		t.Fatalf("ttl=0 should disable staleness")
 	}
@@ -155,7 +155,7 @@ func TestEntries_Snapshot(t *testing.T) {
 
 func TestRefreshServer_UnknownServer(t *testing.T) {
 	cfg := &config.Config{Proxy: config.ProxyConfig{ToolPrefix: "meta"}}
-	c := New(cfg, nil, logx.New(io.Discard))
+	c := New(config.NewHolder(cfg), nil, logx.New(io.Discard))
 	err := c.RefreshServer(context.Background(), "missing")
 	if err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("expected not-found error, got %v", err)

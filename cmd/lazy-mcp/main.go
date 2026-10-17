@@ -73,9 +73,11 @@ func main() {
 		"shutdown_timeout", cfg.Proxy.ShutdownTimeout.String(),
 	)
 
-	brok := broker.New(cfg, log)
-	cat := catalog.New(cfg, brok, log)
-	srv := mcp.NewServer(cfg, brok, cat, log)
+	holder := config.NewHolder(cfg)
+
+	brok := broker.New(holder, log)
+	cat := catalog.New(holder, brok, log)
+	srv := mcp.NewServer(holder, brok, cat, log)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

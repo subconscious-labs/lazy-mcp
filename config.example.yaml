@@ -114,3 +114,16 @@ servers:
     tags: ["notes", "memos"]
     autostart: false
     enabled: true
+
+# Reloading
+# ---------
+# Send SIGHUP to lazy-mcp to reload this file in place:
+#
+#   pkill -HUP -f '/usr/local/bin/lazy-mcp'
+#
+# Applied live: proxy.* tunables, added/removed servers, command/args/env
+# changes (existing backends for changed servers are stopped and will
+# restart lazily).
+#
+# NOT applied live (require full restart): proxy.log_file,
+# proxy.metrics_file, proxy.metrics_interval, proxy.cursor_ttl.
