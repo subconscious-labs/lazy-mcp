@@ -1,8 +1,11 @@
 package catalog
 
 import (
+	"context"
 	"io"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/nikita-popov/lazy-mcp/internal/config"
 	"github.com/nikita-popov/lazy-mcp/internal/logx"
@@ -82,5 +85,79 @@ func TestSearch_NoMatchTotalZero(t *testing.T) {
 	r := c.Search("zzznotexist", 0)
 	if r.Total != 0 || len(r.Hits) != 0 {
 		t.Fatalf("expected empty, got total=%d hits=%d", r.Total, len(r.Hits))
+	}
+}
+
+func TestServerStale(t *testing.T) {
+	cfg := &config.Config{
+		Proxy: config.ProxyConfig{ToolCacheTTL: 100 * time.Millisecond},
+	}
+	c := New(cfg, nil, logx.New(io.Discard))
+
+	// Never refreshed: stale.
+	if !c.ServerStale("srv") {
+		t.Fatalf("unknown server should be stale")
+	}
+
+	// Just refreshed: not stale.
+	c.mu.Lock()
+	c.lastRefresh["srv"] = time.Now()
+	c.mu.Unlock()
+	if c.ServerStale("srv") {
+		t.Fatalf("fresh server should not be stale")
+	}
+
+	// Aged past TTL: stale again.
+	time.Sleep(150 * time.Millisecond)
+	if !c.ServerStale("srv") {
+		t.Fatalf("expired server should be stale")
+	}
+}
+
+func TestServerStale_ZeroTTLNeverStale(t *testing.T) {
+	cfg := &config.Config{
+		Proxy: config.ProxyConfig{ToolCacheTTL: 0},
+	}
+	c := New(cfg, nil, logx.New(io.Discard))
+	if c.ServerStale("never-seen") {
+		t.Fatalf("ttl=0 should disable staleness")
+	}
+}
+
+func TestDescribe(t *testing.T) {
+	e := mkEntry("git", "list", "list repos")
+	c := testCatalogWithEntries([]ToolEntry{e})
+
+	got, ok := c.Describe("git/list")
+	if !ok || got.Tool != "list" {
+		t.Fatalf("Describe: ok=%v, got=%+v", ok, got)
+	}
+	if _, ok := c.Describe("git/nope"); ok {
+		t.Fatalf("unknown ref should not be found")
+	}
+}
+
+func TestEntries_Snapshot(t *testing.T) {
+	c := testCatalogWithEntries([]ToolEntry{
+		mkEntry("a", "t1", ""),
+		mkEntry("b", "t2", ""),
+	})
+	snap := c.Entries()
+	if len(snap) != 2 {
+		t.Fatalf("Entries: %d", len(snap))
+	}
+	// Mutating the snapshot must not affect the catalog.
+	snap[0].Tool = "mutated"
+	if c.Entries()[0].Tool == "mutated" {
+		t.Fatalf("Entries returned a shared slice")
+	}
+}
+
+func TestRefreshServer_UnknownServer(t *testing.T) {
+	cfg := &config.Config{Proxy: config.ProxyConfig{ToolPrefix: "meta"}}
+	c := New(cfg, nil, logx.New(io.Discard))
+	err := c.RefreshServer(context.Background(), "missing")
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected not-found error, got %v", err)
 	}
 }
