@@ -16,18 +16,34 @@ import (
 	"github.com/nikita-popov/lazy-mcp/internal/meta"
 )
 
+// MetaHandlers is the contract the MCP frontend needs from the meta
+// package. Declared here (not in meta) so tests can substitute fakes
+// without dragging broker/catalog into scope.
+type MetaHandlers interface {
+	Search(ctx context.Context, args map[string]any) (string, error)
+	Call(ctx context.Context, args map[string]any) (string, error)
+	DescribeTool(ctx context.Context, args map[string]any) (string, error)
+	ListServers(ctx context.Context, args map[string]any) (string, error)
+}
+
 // Server is the MCP stdio frontend.
 type Server struct {
 	cfg      *config.Config
-	handlers *meta.Handlers
+	handlers MetaHandlers
 	log      *logx.Logger
 }
 
 // NewServer creates a Server.
 func NewServer(cfg *config.Config, brok *broker.Broker, cat *catalog.Catalog, log *logx.Logger) *Server {
+	return newServer(cfg, meta.New(cfg, brok, cat, log), log)
+}
+
+// newServer is the constructor used by tests; it accepts any MetaHandlers
+// implementation.
+func newServer(cfg *config.Config, handlers MetaHandlers, log *logx.Logger) *Server {
 	return &Server{
 		cfg:      cfg,
-		handlers: meta.New(cfg, brok, cat, log),
+		handlers: handlers,
 		log:      log,
 	}
 }
