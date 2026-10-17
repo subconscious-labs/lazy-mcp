@@ -31,6 +31,7 @@ func TestExpand_Table(t *testing.T) {
 		"SET":    "value",
 		"EMPTY":  "",
 		"NESTED": "inner",
+		"CYCLIC": "${CYCLIC:?self}",
 	}
 	files := map[string]string{
 		"/tmp/secret":   "s3cret\n",
@@ -54,6 +55,7 @@ func TestExpand_Table(t *testing.T) {
 		{"nested default", "${UNSET:-${NESTED}}", "inner"},
 		{"dollar escape", "$${SET}", "${SET}"},
 		{"dollar alone", "cost: $5", "cost: $5"},
+		{"escape around real var", "$${LITERAL} ${SET}", "${LITERAL} value"},
 		{"file simple", "${file:/tmp/secret}", "s3cret"},
 		{"file multiline", "${file:/tmp/multi}", "line1\nline2"},
 		{"file trailing newlines trimmed", "${file:/tmp/trailing}", "value"},
@@ -73,7 +75,14 @@ func TestExpand_Table(t *testing.T) {
 }
 
 func TestExpand_Errors(t *testing.T) {
-	e := testExpander(map[string]string{"SET": "v"}, nil)
+	env := map[string]string{
+		"SET":    "v",
+		"CYCLIC": "${CYCLIC:?self}",
+	}
+	files := map[string]string{
+		"/tmp/cyclic": "${FILE_SHOULD_HAVE_BEEN_EXPANDED}",
+	}
+	e := testExpander(env, files)
 
 	tests := []struct {
 		name string
@@ -88,7 +97,10 @@ func TestExpand_Errors(t *testing.T) {
 		{"empty name", "${}", "invalid variable name"},
 		{"file missing", "${file:/no/such}", "read ${file:/no/such}"},
 		{"file empty path", "${file:}", "empty path"},
+		{"cyclic var", "${CYCLIC}", "contains ${...}"},
+		{"cyclic file", "${file:/tmp/cyclic}", "contains ${...}"},
 	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := e.expand(tt.in)

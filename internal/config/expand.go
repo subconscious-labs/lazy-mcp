@@ -110,16 +110,7 @@ func (e *expander) expand(s string) (string, error) {
 			i++
 		}
 	}
-	//return b.String(), nil
-	out := b.String()
-	if strings.Contains(out, "${") {
-		return "", fmt.Errorf(
-			"expansion of %q produced a value that still contains ${...}: %q - "+
-			"check that the referenced environment variable does not contain "+
-			"the same template (cyclic reference)",
-			s, out)
-	}
-	return out, nil
+	return b.String(), nil
 }
 
 // resolve handles the inside of a ${...} expression.
@@ -133,7 +124,13 @@ func (e *expander) resolve(inner string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("read ${file:%s}: %w", path, err)
 		}
-		return strings.TrimRight(string(data), "\r\n"), nil
+		val := strings.TrimRight(string(data), "\r\n")
+		if strings.Contains(val, "${") {
+			return "", fmt.Errorf(
+				"file %s contains ${...} (looks like an unexpanded template): %q",
+				path, val)
+		}
+		return val, nil
 	}
 
 	name := inner
@@ -170,6 +167,15 @@ func (e *expander) resolve(inner string) (string, error) {
 		default:
 			return "", fmt.Errorf("environment variable %s is not set", name)
 		}
+	}
+	// Guard against cyclic references: an env value that is itself a
+	// ${...} template almost always means the config value was copied
+	// verbatim into the env file (e.g. FORGEJOMCP_TOKEN=${FORGEJOMCP_TOKEN:?...}).
+	if strings.Contains(val, "${") {
+		return "", fmt.Errorf(
+			"environment variable %s contains ${...} (looks like an unexpanded template): %q — "+
+				"set the variable to the real value, not the template from config.yaml",
+			name, val)
 	}
 	return val, nil
 }
