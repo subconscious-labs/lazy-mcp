@@ -1,4 +1,4 @@
-![ci](https://github.com/subconscious-labs/lazy-mcp/actions/workflows/ci.yml/badge.svg)
+![release](https://github.com/subconscious-labs/lazy-mcp/actions/workflows/release.yml/badge.svg)
 
 # lazy-mcp
 
