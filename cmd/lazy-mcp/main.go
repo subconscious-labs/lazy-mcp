@@ -71,6 +71,7 @@ func main() {
 		"tool_cache_ttl", cfg.Proxy.ToolCacheTTL.String(),
 		"initialize_timeout", cfg.Proxy.InitializeTimeout.String(),
 		"shutdown_timeout", cfg.Proxy.ShutdownTimeout.String(),
+		"version", observability.Version,
 	)
 
 	holder := config.NewHolder(cfg)
@@ -79,8 +80,8 @@ func main() {
 	cat := catalog.New(holder, brok, log)
 	srv := mcp.NewServer(holder, brok, cat, log)
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	if cfg.Proxy.Warmup {
 		if err := cat.WarmUp(ctx); err != nil {
@@ -115,9 +116,33 @@ func main() {
 		log.Info("metrics writer started", "path", path, "interval", interval.String())
 	}
 
+	// Signal handling: SIGINT/SIGTERM trigger graceful shutdown;
+	// SIGHUP reloads the config in place.
+	sigCh := make(chan os.Signal, 4)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case sig := <-sigCh:
+				switch sig {
+				case syscall.SIGHUP:
+					reload(*cfgPath, holder, brok, cat, log)
+				case syscall.SIGINT, syscall.SIGTERM:
+					// Restore default handling so a second signal kills.
+					signal.Stop(sigCh)
+					log.Info("shutdown signal received", "sig", sig.String())
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+
 	log.Info("ready", "transport", "stdio")
 
-	// Run the server on its own goroutine so main can react to shutdown.
 	runErr := make(chan error, 1)
 	go func() {
 		runErr <- srv.Run(ctx, os.Stdin, os.Stdout)
@@ -127,7 +152,6 @@ func main() {
 
 	select {
 	case err := <-runErr:
-		// Server exited on its own (EOF on stdin, encode error, etc.).
 		if err != nil && !errors.Is(err, context.Canceled) {
 			log.Error("server error", "err", err)
 			exitCode = 1
@@ -136,10 +160,6 @@ func main() {
 		}
 
 	case <-ctx.Done():
-		// Signal received. Calling stop() restores default signal handling,
-		// so a second SIGINT/SIGTERM kills us immediately.
-		stop()
-
 		grace := cfg.Proxy.ShutdownTimeout
 		log.Info("shutdown: draining in-flight work", "grace", grace.String())
 
@@ -158,4 +178,35 @@ func main() {
 	brok.StopAll()
 
 	os.Exit(exitCode)
+}
+
+// reload loads cfgPath and applies the new config in place.
+func reload(cfgPath string, holder *config.Holder, brok *broker.Broker, cat *catalog.Catalog, log *logx.Logger) {
+	log.Info("SIGHUP: reloading config", "path", cfgPath)
+
+	newCfg, err := config.Load(cfgPath)
+	if err != nil {
+		log.Error("SIGHUP: reload failed", "err", err)
+		return
+	}
+
+	old := holder.Swap(newCfg)
+	brok.ApplyConfig(old, newCfg)
+	cat.ApplyConfig(newCfg)
+
+	// Warn about changes that require a full restart.
+	if newCfg.Proxy.LogFile != old.Proxy.LogFile {
+		log.Warn("SIGHUP: log_file changed; restart required")
+	}
+	if newCfg.Proxy.MetricsFile != old.Proxy.MetricsFile ||
+		newCfg.Proxy.MetricsInterval != old.Proxy.MetricsInterval {
+		log.Warn("SIGHUP: metrics config changed; restart required")
+	}
+	if newCfg.Proxy.CursorTTL != old.Proxy.CursorTTL {
+		log.Warn("SIGHUP: cursor_ttl changed; existing PageStore keeps its old TTL")
+	}
+
+	log.Info("SIGHUP: config applied",
+		"servers", len(newCfg.Servers),
+		"enabled", len(newCfg.EnabledServers()))
 }
