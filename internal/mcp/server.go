@@ -9,11 +9,11 @@ import (
 	"io"
 	"strings"
 
-	"github.com/nikita-popov/lazy-mcp/internal/broker"
-	"github.com/nikita-popov/lazy-mcp/internal/catalog"
-	"github.com/nikita-popov/lazy-mcp/internal/config"
-	"github.com/nikita-popov/lazy-mcp/internal/logx"
-	"github.com/nikita-popov/lazy-mcp/internal/meta"
+	"github.com/subconscious-labs/lazy-mcp/internal/broker"
+	"github.com/subconscious-labs/lazy-mcp/internal/catalog"
+	"github.com/subconscious-labs/lazy-mcp/internal/config"
+	"github.com/subconscious-labs/lazy-mcp/internal/logx"
+	"github.com/subconscious-labs/lazy-mcp/internal/meta"
 )
 
 // MetaHandlers is the contract the MCP frontend needs from the meta

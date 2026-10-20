@@ -9,7 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/nikita-popov/lazy-mcp/internal/config"
+	"github.com/subconscious-labs/lazy-mcp/internal/config"
 )
 
 func TestWrapResult(t *testing.T) {

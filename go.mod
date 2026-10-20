@@ -1,4 +1,4 @@
-module github.com/nikita-popov/lazy-mcp
+module github.com/subconscious-labs/lazy-mcp
 
 go 1.22
 

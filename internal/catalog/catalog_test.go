@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nikita-popov/lazy-mcp/internal/config"
-	"github.com/nikita-popov/lazy-mcp/internal/logx"
+	"github.com/subconscious-labs/lazy-mcp/internal/config"
+	"github.com/subconscious-labs/lazy-mcp/internal/logx"
 )
 
 func testCatalogWithEntries(entries []ToolEntry) *Catalog {
@@ -159,5 +159,116 @@ func TestRefreshServer_UnknownServer(t *testing.T) {
 	err := c.RefreshServer(context.Background(), "missing")
 	if err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("expected not-found error, got %v", err)
+	}
+}
+
+func TestApplyConfig_DropsDisabledEntries(t *testing.T) {
+	srvA := config.ServerConfig{Name: "a", Enabled: true}
+	srvB := config.ServerConfig{Name: "b", Enabled: true}
+	cfg := &config.Config{
+		Proxy:   config.ProxyConfig{ToolPrefix: "meta"},
+		Servers: []config.ServerConfig{srvA, srvB},
+	}
+	c := New(config.NewHolder(cfg), nil, logx.New(io.Discard))
+	c.entries = []ToolEntry{
+		mkEntry("a", "t1", ""),
+		mkEntry("a", "t2", ""),
+		mkEntry("b", "t1", ""),
+	}
+	c.lastRefresh["a"] = time.Now()
+	c.lastRefresh["b"] = time.Now()
+
+	// b disabled.
+	newCfg := &config.Config{
+		Proxy: cfg.Proxy,
+		Servers: []config.ServerConfig{
+			srvA,
+			{Name: "b", Enabled: false},
+		},
+	}
+	c.ApplyConfig(newCfg)
+
+	snap := c.Entries()
+	if len(snap) != 2 {
+		t.Fatalf("entries: got %d, want 2 (only a)", len(snap))
+	}
+	for _, e := range snap {
+		if e.Server != "a" {
+			t.Fatalf("unexpected entry from server %q", e.Server)
+		}
+	}
+
+	c.mu.RLock()
+	_, hasB := c.lastRefresh["b"]
+	_, hasA := c.lastRefresh["a"]
+	c.mu.RUnlock()
+	if hasB {
+		t.Fatalf("lastRefresh[b] should be cleared")
+	}
+	if !hasA {
+		t.Fatalf("lastRefresh[a] should be preserved")
+	}
+}
+
+func TestApplyConfig_DropsRemovedServer(t *testing.T) {
+	srvA := config.ServerConfig{Name: "a", Enabled: true}
+	cfg := &config.Config{
+		Proxy:   config.ProxyConfig{ToolPrefix: "meta"},
+		Servers: []config.ServerConfig{srvA},
+	}
+	c := New(config.NewHolder(cfg), nil, logx.New(io.Discard))
+	c.entries = []ToolEntry{
+		mkEntry("a", "t1", ""),
+		mkEntry("b", "t1", ""), // b was never in the config, but in the index
+	}
+
+	newCfg := &config.Config{
+		Proxy:   cfg.Proxy,
+		Servers: []config.ServerConfig{srvA},
+	}
+	c.ApplyConfig(newCfg)
+
+	snap := c.Entries()
+	if len(snap) != 1 || snap[0].Server != "a" {
+		t.Fatalf("entries: got %+v", snap)
+	}
+}
+
+func TestApplyConfig_NoopWhenNothingChanged(t *testing.T) {
+	srvA := config.ServerConfig{Name: "a", Enabled: true}
+	cfg := &config.Config{
+		Proxy:   config.ProxyConfig{ToolPrefix: "meta"},
+		Servers: []config.ServerConfig{srvA},
+	}
+	c := New(config.NewHolder(cfg), nil, logx.New(io.Discard))
+	c.entries = []ToolEntry{mkEntry("a", "t1", "")}
+	c.lastRefresh["a"] = time.Now()
+
+	c.ApplyConfig(cfg)
+
+	if len(c.Entries()) != 1 {
+		t.Fatalf("noop should keep entries")
+	}
+}
+
+func TestApplyConfig_EmptyAfterAllDisabled(t *testing.T) {
+	srvA := config.ServerConfig{Name: "a", Enabled: true}
+	cfg := &config.Config{
+		Proxy:   config.ProxyConfig{ToolPrefix: "meta"},
+		Servers: []config.ServerConfig{srvA},
+	}
+	c := New(config.NewHolder(cfg), nil, logx.New(io.Discard))
+	c.entries = []ToolEntry{mkEntry("a", "t1", "")}
+
+	newCfg := &config.Config{
+		Proxy: cfg.Proxy,
+		Servers: []config.ServerConfig{
+			{Name: "a", Enabled: false},
+		},
+	}
+	c.ApplyConfig(newCfg)
+
+	if len(c.Entries()) != 0 {
+		t.Fatalf("all entries should be dropped")
 	}
 }

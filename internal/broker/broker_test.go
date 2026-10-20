@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nikita-popov/lazy-mcp/internal/config"
-	"github.com/nikita-popov/lazy-mcp/internal/logx"
+	"github.com/subconscious-labs/lazy-mcp/internal/config"
+	"github.com/subconscious-labs/lazy-mcp/internal/logx"
 )
 
 // mockMCPPath is set by TestMain; absolute path to the compiled mock server.

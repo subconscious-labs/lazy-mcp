@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nikita-popov/lazy-mcp/internal/config"
-	"github.com/nikita-popov/lazy-mcp/internal/logx"
-	"github.com/nikita-popov/lazy-mcp/internal/observability"
+	"github.com/subconscious-labs/lazy-mcp/internal/config"
+	"github.com/subconscious-labs/lazy-mcp/internal/logx"
+	"github.com/subconscious-labs/lazy-mcp/internal/observability"
 )
 
 // ToolInfo is a normalized tool descriptor from a backend.

@@ -10,10 +10,10 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/nikita-popov/lazy-mcp/internal/broker"
-	"github.com/nikita-popov/lazy-mcp/internal/catalog"
-	"github.com/nikita-popov/lazy-mcp/internal/config"
-	"github.com/nikita-popov/lazy-mcp/internal/logx"
+	"github.com/subconscious-labs/lazy-mcp/internal/broker"
+	"github.com/subconscious-labs/lazy-mcp/internal/catalog"
+	"github.com/subconscious-labs/lazy-mcp/internal/config"
+	"github.com/subconscious-labs/lazy-mcp/internal/logx"
 )
 
 // Handlers holds dependencies for meta-tool execution.

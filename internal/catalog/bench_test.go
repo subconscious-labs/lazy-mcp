@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nikita-popov/lazy-mcp/internal/config"
-	"github.com/nikita-popov/lazy-mcp/internal/logx"
+	"github.com/subconscious-labs/lazy-mcp/internal/config"
+	"github.com/subconscious-labs/lazy-mcp/internal/logx"
 )
 
 // benchEntry is a realistic ToolEntry used by all benchmarks.
