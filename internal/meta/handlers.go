@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -26,17 +27,24 @@ type Handlers struct {
 	policy *policy.Policy
 	log    *logx.Logger
 	pager  *PageStore
+
+	// reloadFn is injected by main. nil means meta_reload is not
+	// available in this build (e.g., unit tests without a config file).
+	reloadFn   func() ([]string, error)
+	reloadMu   sync.Mutex
+	lastReload time.Time
 }
 
 // New creates Handlers.
-func New(cfg *config.Holder, brok *broker.Broker, cat *catalog.Catalog, pol *policy.Policy, log *logx.Logger) *Handlers {
+func New(cfg *config.Holder, brok *broker.Broker, cat *catalog.Catalog, pol *policy.Policy, log *logx.Logger, reloadFn func() ([]string, error)) *Handlers {
 	return &Handlers{
-		cfg:    cfg,
-		brok:   brok,
-		cat:    cat,
-		policy: pol,
-		log:    log,
-		pager:  NewPageStore(cfg.Get().Proxy.CursorTTL),
+		cfg:      cfg,
+		brok:     brok,
+		cat:      cat,
+		policy:   pol,
+		log:      log,
+		pager:    NewPageStore(cfg.Get().Proxy.CursorTTL),
+		reloadFn: reloadFn,
 	}
 }
 

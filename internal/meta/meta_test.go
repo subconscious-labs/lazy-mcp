@@ -66,8 +66,12 @@ func newTestHandlers() *Handlers {
 	})
 	return &Handlers{
 		cfg:    holder,
+		log:    logx.New(io.Discard),
 		policy: policy.New(holder),
 		pager:  NewPageStore(time.Minute),
+		// reloadFn nil: meta_reload returns "not available" in
+		// handlers built this way. Tests that need reload build
+		// Handlers explicitly.
 	}
 }
 

@@ -28,6 +28,7 @@ type MetaHandlers interface {
 	DescribeTool(ctx context.Context, args map[string]any) (string, error)
 	ListServers(ctx context.Context, args map[string]any) (string, error)
 	WhoAmI(ctx context.Context, args map[string]any) (string, error)
+	Reload(ctx context.Context, args map[string]any) (string, error)
 }
 
 // Server is the MCP stdio frontend.
@@ -38,8 +39,8 @@ type Server struct {
 }
 
 // NewServer creates a Server.
-func NewServer(cfg *config.Holder, brok *broker.Broker, cat *catalog.Catalog, pol *policy.Policy, log *logx.Logger) *Server {
-	return newServer(cfg, meta.New(cfg, brok, cat, pol, log), log)
+func NewServer(cfg *config.Holder, brok *broker.Broker, cat *catalog.Catalog, pol *policy.Policy, log *logx.Logger, reloadFn func() ([]string, error)) *Server {
+	return newServer(cfg, meta.New(cfg, brok, cat, pol, log, reloadFn), log)
 }
 
 // newServer is the constructor used by tests; it accepts any MetaHandlers
@@ -187,6 +188,8 @@ func (s *Server) dispatch(ctx context.Context, prefix, name string, args map[str
 		return s.handlers.ListServers(ctx, args)
 	case "whoami":
 		return s.handlers.WhoAmI(ctx, args)
+	case "reload":
+		return s.handlers.Reload(ctx, args)
 	default:
 		return "", fmt.Errorf("unknown meta-tool: %s", name)
 	}
@@ -254,6 +257,14 @@ func (s *Server) toolManifest(prefix string) []map[string]any {
 		{
 			"name":        prefix + "_whoami",
 			"description": "Report the current session identity: user, role, allowed_servers, and how many servers are visible vs configured. Use this when meta_list_servers returns an empty or unexpectedly short list - it distinguishes 'nothing configured' from 'ACL hides them'.",
+			"inputSchema": map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+			},
+		},
+		{
+			"name":        prefix + "_reload",
+			"description": "Reload main config from disk and apply it in place. Admin only. Returns {ok, servers, enabled, names, warnings?}. Rate-limited to one call per 5 seconds. Use after the operator saves the config - no restart or SIGHUP needed. Existing MCP sessions keep their ACL until they reconnect, so a role change requires reconnecting.",
 			"inputSchema": map[string]any{
 				"type":       "object",
 				"properties": map[string]any{},

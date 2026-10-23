@@ -21,6 +21,7 @@ type fakeHandlers struct {
 	describeToolFn func(ctx context.Context, args map[string]any) (string, error)
 	listServersFn  func(ctx context.Context, args map[string]any) (string, error)
 	whoAmIFn       func(ctx context.Context, args map[string]any) (string, error)
+	reloadFn       func(ctx context.Context, args map[string]any) (string, error)
 }
 
 func (f *fakeHandlers) Search(ctx context.Context, args map[string]any) (string, error) {
@@ -56,6 +57,13 @@ func (f *fakeHandlers) WhoAmI(ctx context.Context, args map[string]any) (string,
 		return "", errors.New("whoAmIFn not set")
 	}
 	return f.whoAmIFn(ctx, args)
+}
+
+func (f *fakeHandlers) Reload(ctx context.Context, args map[string]any) (string, error) {
+	if f.reloadFn == nil {
+		return "reload-ok", nil
+	}
+	return f.reloadFn(ctx, args)
 }
 
 func testServer(t *testing.T, prefix string, h MetaHandlers) *Server {
@@ -150,6 +158,7 @@ func TestRun_ToolsList_Prefix(t *testing.T) {
 		"xp_describe_tool": false,
 		"xp_list_servers":  false,
 		"xp_whoami":        false,
+		"xp_reload":        false,
 	}
 	for _, raw := range tools {
 		obj := raw.(map[string]any)
@@ -283,6 +292,16 @@ func TestRun_Dispatch_AllMetaTools(t *testing.T) {
 			name:     "list_servers",
 			handler:  &fakeHandlers{listServersFn: func(context.Context, map[string]any) (string, error) { return "list-ok", nil }},
 			wantText: "list-ok",
+		},
+		{
+			name:     "whoami",
+			handler:  &fakeHandlers{whoAmIFn: func(context.Context, map[string]any) (string, error) { return "whoami-ok", nil }},
+			wantText: "whoami-ok",
+		},
+		{
+			name:     "reload",
+			handler:  &fakeHandlers{reloadFn: func(context.Context, map[string]any) (string, error) { return "reload-ok", nil }},
+			wantText: "reload-ok",
 		},
 	}
 	for _, c := range cases {

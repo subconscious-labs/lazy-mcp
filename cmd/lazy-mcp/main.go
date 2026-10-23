@@ -85,7 +85,10 @@ func main() {
 	pol := policy.New(holder)
 	brok := broker.New(holder, pol, log)
 	cat := catalog.New(holder, brok, pol, log)
-	srv := mcp.NewServer(holder, brok, cat, pol, log)
+	reloadFn := func() ([]string, error) {
+		return reload(*cfgPath, holder, pol, brok, cat, log)
+	}
+	srv := mcp.NewServer(holder, brok, cat, pol, log, reloadFn)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -158,7 +161,13 @@ func main() {
 			case sig := <-sigCh:
 				switch sig {
 				case syscall.SIGHUP:
-					reload(*cfgPath, holder, pol, brok, cat, log)
+					warns, err := reload(*cfgPath, holder, pol, brok, cat, log)
+					if err != nil {
+						log.Error("SIGHUP: reload failed", "err", err)
+					}
+					for _, w := range warns {
+						log.Warn("SIGHUP: " + w)
+					}
 				case syscall.SIGINT, syscall.SIGTERM:
 					signal.Stop(sigCh)
 					log.Info("shutdown signal received", "sig", sig.String())
@@ -234,37 +243,41 @@ func main() {
 	os.Exit(exitCode)
 }
 
-// reload loads cfgPath and applies the new config in place.
-func reload(cfgPath string, holder *config.Holder, pol *policy.Policy, brok *broker.Broker, cat *catalog.Catalog, log *logx.Logger) {
-	log.Info("SIGHUP: reloading config", "path", cfgPath)
+// reload loads cfgPath, applies the new config, and returns any
+// operator-facing warnings (duplicate servers, fields that need a
+// full restart). Errors mean the config was not applied — the old
+// configuration stays live.
+func reload(cfgPath string, holder *config.Holder, pol *policy.Policy, brok *broker.Broker, cat *catalog.Catalog, log *logx.Logger) ([]string, error) {
+	log.Info("reload: loading config", "path", cfgPath)
 
 	newCfg, err := config.Load(cfgPath)
 	if err != nil {
-		log.Error("SIGHUP: reload failed", "err", err)
-		return
+		log.Error("reload: load failed", "err", err)
+		return nil, err
 	}
-	for _, w := range config.DrainWarnings() {
-		log.Warn("SIGHUP: config: " + w)
-	}
+
+	var warnings []string
+	warnings = append(warnings, config.DrainWarnings()...)
+
 	old := holder.Swap(newCfg)
 	pol.Invalidate()
 	cat.Invalidate()
 	brok.ApplyConfig(old, newCfg)
 	cat.ApplyConfig(newCfg)
 
-	// Warn about changes that require a full restart.
 	if newCfg.Proxy.LogFile != old.Proxy.LogFile {
-		log.Warn("SIGHUP: log_file changed; restart required")
+		warnings = append(warnings, "log_file changed; restart required")
 	}
 	if newCfg.Proxy.MetricsFile != old.Proxy.MetricsFile ||
 		newCfg.Proxy.MetricsInterval != old.Proxy.MetricsInterval {
-		log.Warn("SIGHUP: metrics config changed; restart required")
+		warnings = append(warnings, "metrics config changed; restart required")
 	}
 	if newCfg.Proxy.CursorTTL != old.Proxy.CursorTTL {
-		log.Warn("SIGHUP: cursor_ttl changed; existing PageStore keeps its old TTL")
+		warnings = append(warnings, "cursor_ttl changed; existing PageStore keeps its old TTL")
 	}
 
-	log.Info("SIGHUP: config applied",
+	log.Info("reload: applied",
 		"servers", len(newCfg.Servers),
 		"enabled", len(newCfg.EnabledServers()))
+	return warnings, nil
 }

@@ -27,7 +27,7 @@ func newTestHub(t *testing.T, cfg *config.Config) (*Hub, *httptest.Server) {
 	t.Helper()
 	holder := config.NewHolder(cfg)
 	pol := policy.New(holder)
-	srv := mcp.NewServer(holder, nil, nil, pol, logx.New(io.Discard))
+	srv := mcp.NewServer(holder, nil, nil, pol, logx.New(io.Discard), nil)
 	h := New(holder, srv, logx.New(io.Discard))
 	ts := httptest.NewServer(h.authMiddleware(http.HandlerFunc(h.handleMCP)))
 	t.Cleanup(ts.Close)
