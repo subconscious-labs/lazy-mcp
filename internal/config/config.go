@@ -315,6 +315,11 @@ func (c *Config) validate() error {
 		}
 		names := map[string]bool{}
 		for i, u := range c.Auth.Users {
+			if u.Role == "agent" && len(u.AllowedServers) == 0 {
+				return fmt.Errorf(
+					"auth.users[%d] %q: role=agent requires allowed_servers (empty list means no access)",
+					i, u.Name)
+			}
 			if u.Name == "" {
 				return fmt.Errorf("auth.users[%d]: name is required", i)
 			}

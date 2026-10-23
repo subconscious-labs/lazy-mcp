@@ -387,6 +387,42 @@ func (h *Handlers) ListServers(ctx context.Context, args map[string]any) (string
 	return string(b), nil
 }
 
+// WhoAmI reports the current session identity and how many servers are
+// visible to it. Useful when meta_list_servers returns an empty list:
+// distinguishes "no servers configured" from "ACL hides them".
+// args: {}
+func (h *Handlers) WhoAmI(ctx context.Context, _ map[string]any) (string, error) {
+	user, sess := sessionUser(ctx)
+
+	out := map[string]any{
+		"user": user,
+	}
+	if sess != nil {
+		out["role"] = sess.Role
+		out["allowed_servers"] = sess.AllowedServers
+		out["session_id"] = sess.ID
+	} else {
+		out["role"] = "admin"
+		out["allowed_servers"] = []string{}
+	}
+
+	all := h.cfg.Get().EnabledServers()
+	visible := 0
+	for _, s := range all {
+		if sess == nil || sess.CanSeeServer(s.Name) {
+			visible++
+		}
+	}
+	out["total_servers"] = len(all)
+	out["visible_servers"] = visible
+
+	b, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
 // splitRef parses "server/tool" into its two parts.
 func splitRef(ref string) (server, tool string, err error) {
 	i := strings.IndexByte(ref, '/')

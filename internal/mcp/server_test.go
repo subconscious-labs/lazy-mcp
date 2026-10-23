@@ -20,6 +20,7 @@ type fakeHandlers struct {
 	callFn         func(ctx context.Context, args map[string]any) (string, error)
 	describeToolFn func(ctx context.Context, args map[string]any) (string, error)
 	listServersFn  func(ctx context.Context, args map[string]any) (string, error)
+	whoAmIFn       func(ctx context.Context, args map[string]any) (string, error)
 }
 
 func (f *fakeHandlers) Search(ctx context.Context, args map[string]any) (string, error) {
@@ -48,6 +49,13 @@ func (f *fakeHandlers) ListServers(ctx context.Context, args map[string]any) (st
 		return "", errors.New("listServersFn not set")
 	}
 	return f.listServersFn(ctx, args)
+}
+
+func (f *fakeHandlers) WhoAmI(ctx context.Context, args map[string]any) (string, error) {
+	if f.whoAmIFn == nil {
+		return "", errors.New("whoAmIFn not set")
+	}
+	return f.whoAmIFn(ctx, args)
 }
 
 func testServer(t *testing.T, prefix string, h MetaHandlers) *Server {
@@ -141,6 +149,7 @@ func TestRun_ToolsList_Prefix(t *testing.T) {
 		"xp_call":          false,
 		"xp_describe_tool": false,
 		"xp_list_servers":  false,
+		"xp_whoami":        false,
 	}
 	for _, raw := range tools {
 		obj := raw.(map[string]any)

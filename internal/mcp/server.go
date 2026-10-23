@@ -14,6 +14,7 @@ import (
 	"github.com/subconscious-labs/lazy-mcp/internal/config"
 	"github.com/subconscious-labs/lazy-mcp/internal/logx"
 	"github.com/subconscious-labs/lazy-mcp/internal/meta"
+	"github.com/subconscious-labs/lazy-mcp/internal/observability"
 	"github.com/subconscious-labs/lazy-mcp/internal/policy"
 	"github.com/subconscious-labs/lazy-mcp/internal/session"
 )
@@ -26,6 +27,7 @@ type MetaHandlers interface {
 	Call(ctx context.Context, args map[string]any) (string, error)
 	DescribeTool(ctx context.Context, args map[string]any) (string, error)
 	ListServers(ctx context.Context, args map[string]any) (string, error)
+	WhoAmI(ctx context.Context, args map[string]any) (string, error)
 }
 
 // Server is the MCP stdio frontend.
@@ -137,7 +139,7 @@ func (s *Server) handle(ctx context.Context, id any, method string, params json.
 			"capabilities":    map[string]any{"tools": map[string]any{}},
 			"serverInfo": map[string]any{
 				"name":    "lazy-mcp",
-				"version": "0.1.0",
+				"version": observability.Version,
 			},
 		})
 
@@ -183,6 +185,8 @@ func (s *Server) dispatch(ctx context.Context, prefix, name string, args map[str
 		return s.handlers.DescribeTool(ctx, args)
 	case "list_servers":
 		return s.handlers.ListServers(ctx, args)
+	case "whoami":
+		return s.handlers.WhoAmI(ctx, args)
 	default:
 		return "", fmt.Errorf("unknown meta-tool: %s", name)
 	}
@@ -245,6 +249,14 @@ func (s *Server) toolManifest(prefix string) []map[string]any {
 						"description": "Include disabled servers (default: false)",
 					},
 				},
+			},
+		},
+		{
+			"name":        prefix + "_whoami",
+			"description": "Report the current session identity: user, role, allowed_servers, and how many servers are visible vs configured. Use this when meta_list_servers returns an empty or unexpectedly short list - it distinguishes 'nothing configured' from 'ACL hides them'.",
+			"inputSchema": map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
 			},
 		},
 	}
