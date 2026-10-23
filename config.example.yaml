@@ -1,5 +1,19 @@
 version: 1
 
+# Includes
+# --------
+# Splitting the config across files:
+#
+#   include:
+#     - "conf.d/*.yaml"
+#
+# - Paths are relative to this file's directory; globs are supported.
+# - `proxy` and `auth` may appear only in this top-level file.
+# - `servers` merge by name; the last definition wins, with a warning.
+# - `auth.users` merge by name; duplicate names are an error.
+# - Nested `include:` is not allowed.
+# - ${...} expansion works inside included files.
+
 # Substitutions
 # -------------
 # Any string value in this file may reference the environment or a file:

@@ -3,7 +3,6 @@ package config
 import (
 	"encoding/hex"
 	"fmt"
-	"os"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -226,21 +225,37 @@ func (c *Config) Server(name string) (ServerConfig, bool) {
 	return ServerConfig{}, false
 }
 
-// Load reads, expands and parses a YAML config file.
-//
-// Before decoding, every string scalar is passed through ${...}
-// expansion: environment variables and file contents can stand in for
-// literal values, so secrets never need to be written to config.yaml.
-// See expand.go for the supported syntax.
+// loadWarnings carries warnings from the most recent Load call. main
+// drains them via DrainWarnings after Load returns. Load is not
+// expected to run concurrently with itself.
+var loadWarnings []string
+
+// DrainWarnings returns and clears the warnings from the last Load.
+func DrainWarnings() []string {
+	w := loadWarnings
+	loadWarnings = nil
+	return w
+}
+
+// Load reads path, resolves includes, applies ${...} expansion and
+// returns the merged Config. Warnings (duplicate servers) are exposed
+// via DrainWarnings.
 func Load(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
+	raw, warnings, err := loadWithIncludes(path)
 	if err != nil {
-		return nil, fmt.Errorf("read config %q: %w", path, err)
+		return nil, err
+	}
+
+	// Re-marshal to a yaml.Node so the existing expander pass runs on
+	// the final merged tree.
+	buf, err := yaml.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("re-encode merged config: %w", err)
 	}
 
 	var root yaml.Node
-	if err := yaml.Unmarshal(data, &root); err != nil {
-		return nil, fmt.Errorf("parse config %q: %w", path, err)
+	if err := yaml.Unmarshal(buf, &root); err != nil {
+		return nil, fmt.Errorf("re-parse merged config: %w", err)
 	}
 
 	if err := defaultExpander().expandNode(&root); err != nil {
@@ -256,6 +271,8 @@ func Load(path string) (*Config, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, fmt.Errorf("validate config %q: %w", path, err)
 	}
+
+	loadWarnings = warnings
 	return &cfg, nil
 }
 

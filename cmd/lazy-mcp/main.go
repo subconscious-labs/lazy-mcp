@@ -55,6 +55,10 @@ func main() {
 		defer func() { _ = logCloser.Close() }()
 	}
 
+	for _, w := range config.DrainWarnings() {
+		log.Warn("config: " + w)
+	}
+
 	var disabled []string
 	for _, s := range cfg.Servers {
 		if !s.Enabled {
@@ -214,7 +218,9 @@ func reload(cfgPath string, holder *config.Holder, brok *broker.Broker, cat *cat
 		log.Error("SIGHUP: reload failed", "err", err)
 		return
 	}
-
+	for _, w := range config.DrainWarnings() {
+		log.Warn("SIGHUP: config: " + w)
+	}
 	old := holder.Swap(newCfg)
 	brok.ApplyConfig(old, newCfg)
 	cat.ApplyConfig(newCfg)
