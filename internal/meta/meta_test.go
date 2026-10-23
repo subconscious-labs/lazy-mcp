@@ -4,12 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
 
+	"github.com/subconscious-labs/lazy-mcp/internal/broker"
+	"github.com/subconscious-labs/lazy-mcp/internal/catalog"
 	"github.com/subconscious-labs/lazy-mcp/internal/config"
+	"github.com/subconscious-labs/lazy-mcp/internal/logx"
 	"github.com/subconscious-labs/lazy-mcp/internal/policy"
 )
 
@@ -406,5 +410,36 @@ func TestCall_RejectsOversizedArguments(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "arguments too large") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestCall_DenyDestructive(t *testing.T) {
+	holder := config.NewHolder(&config.Config{
+		Proxy: config.ProxyConfig{DenyDestructive: true},
+		Servers: []config.ServerConfig{
+			{Name: "server", Enabled: true},
+		},
+	})
+	pol := policy.New(holder)
+	cat := catalog.New(holder, nil, pol, logx.New(io.Discard))
+	cat.InjectEntries([]catalog.ToolEntry{
+		{
+			Ref:         "server/danger",
+			Server:      "server",
+			Tool:        "danger",
+			Annotations: broker.ToolAnnotations{DestructiveHint: true},
+		},
+	})
+	h := &Handlers{
+		cfg:    holder,
+		cat:    cat,
+		policy: pol,
+	}
+	_, err := h.Call(context.Background(), map[string]any{
+		"tool_ref":  "server/danger",
+		"arguments": map[string]any{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "destructive") {
+		t.Fatalf("expected destructive error, got %v", err)
 	}
 }

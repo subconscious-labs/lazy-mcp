@@ -97,6 +97,9 @@ proxy:
   # 15s, 30s, 60s.
   metrics_file: ""
   metrics_interval: 15s
+  # Reject calls to tools whose downstream server marks
+  # annotations.destructiveHint: true. Works without a manual list.
+  deny_destructive: false
   # Circuit breaker: isolate a backend after N consecutive transport-level
   # failures. Tool-level errors (isError:true) do NOT count.
   circuit_breaker:

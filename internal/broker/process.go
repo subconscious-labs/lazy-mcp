@@ -286,6 +286,7 @@ func (p *backendProcess) ListTools(ctx context.Context) ([]ToolInfo, error) {
 		Name        string          `json:"name"`
 		Description string          `json:"description"`
 		InputSchema json.RawMessage `json:"inputSchema"`
+		Annotations ToolAnnotations `json:"annotations,omitempty"`
 	}
 	type listResult struct {
 		Tools []rawTool `json:"tools"`

@@ -26,6 +26,7 @@ type ToolEntry struct {
 	InputHint   string
 	InputSchema []byte
 	Dangerous   bool
+	Annotations broker.ToolAnnotations
 
 	toolLower    string
 	refLower     string
@@ -137,6 +138,7 @@ func (c *Catalog) RefreshServer(ctx context.Context, serverName string) error {
 			InputHint:   extractInputHint(t.InputSchema),
 			InputSchema: t.InputSchema,
 			Dangerous:   dangerSet[t.Name],
+			Annotations: t.Annotations,
 		}
 		entry.computeLower()
 		entries = append(entries, entry)
@@ -336,6 +338,14 @@ func (c *Catalog) Entries() []ToolEntry {
 	out := make([]ToolEntry, len(c.entries))
 	copy(out, c.entries)
 	return out
+}
+
+// InjectEntries replaces the catalog contents. Intended for tests
+// that need deterministic entries without a running broker.
+func (c *Catalog) InjectEntries(entries []ToolEntry) {
+	c.mu.Lock()
+	c.entries = entries
+	c.mu.Unlock()
 }
 
 func firstNonEmpty(a, b string) string {

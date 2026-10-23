@@ -50,6 +50,11 @@ type ProxyConfig struct {
 	// DenyDangerous rejects calls to tools listed in server.dangerous_tools.
 	// Default: false (dangerous is metadata only).
 	DenyDangerous bool `yaml:"deny_dangerous"`
+	// DenyDestructive rejects calls to tools whose downstream MCP
+	// server marks destructiveHint: true. Unlike deny_dangerous this
+	// works automatically without an operator-maintained list.
+	// Default: false.
+	DenyDestructive bool `yaml:"deny_destructive"`
 	// RateLimit caps call throughput per (user, server, tool).
 	RateLimit RateLimitConfig `yaml:"rate_limit"`
 	// LogFile, if set, receives the same JSONL stream as stderr. Empty

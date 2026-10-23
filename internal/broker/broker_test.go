@@ -480,3 +480,30 @@ func TestCircuit_RPCClientErrorDoesNotTrip(t *testing.T) {
 		t.Fatalf("RPC client errors should not trip circuit, got %s", got)
 	}
 }
+
+func TestListTools_AnnotationsPropagate(t *testing.T) {
+	b := newTestBroker(t, []config.ServerConfig{
+		testServer("mock", map[string]string{"MOCK_TOOLS": "plain,read_ro,del_destr"}),
+	}, brokerOpts{})
+
+	tools, err := b.ListTools(context.Background(), "mock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tools) != 3 {
+		t.Fatalf("got %d tools", len(tools))
+	}
+	byName := map[string]ToolInfo{}
+	for _, ti := range tools {
+		byName[ti.Name] = ti
+	}
+	if byName["read_ro"].Annotations.ReadOnlyHint != true {
+		t.Fatalf("read_ro: readOnlyHint not propagated")
+	}
+	if byName["del_destr"].Annotations.DestructiveHint != true {
+		t.Fatalf("del_destr: destructiveHint not propagated")
+	}
+	if byName["plain"].Annotations.ReadOnlyHint || byName["plain"].Annotations.DestructiveHint {
+		t.Fatalf("plain: unexpected annotations")
+	}
+}

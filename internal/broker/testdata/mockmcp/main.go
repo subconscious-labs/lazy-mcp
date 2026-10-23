@@ -70,11 +70,22 @@ func main() {
 		case "tools/list":
 			list := make([]map[string]any, 0, len(tools))
 			for _, name := range tools {
-				list = append(list, map[string]any{
+				annot := map[string]any{}
+				switch {
+				case strings.HasSuffix(name, "_ro"):
+					annot["readOnlyHint"] = true
+				case strings.HasSuffix(name, "_destr"):
+					annot["destructiveHint"] = true
+				}
+				tool := map[string]any{
 					"name":        name,
 					"description": "mock tool " + name,
 					"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
-				})
+				}
+				if len(annot) > 0 {
+					tool["annotations"] = annot
+				}
+				list = append(list, tool)
 			}
 			write(out, *req.ID, map[string]any{"tools": list})
 

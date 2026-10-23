@@ -89,24 +89,26 @@ func (h *Handlers) Search(ctx context.Context, args map[string]any) (string, err
 	result := h.cat.Search(query, limit, visible)
 
 	type hitOut struct {
-		Ref       string   `json:"tool_ref"`
-		Server    string   `json:"server"`
-		Tool      string   `json:"tool"`
-		Summary   string   `json:"summary"`
-		Tags      []string `json:"tags"`
-		InputHint string   `json:"input_hint,omitempty"`
-		Dangerous bool     `json:"dangerous,omitempty"`
+		Ref         string   `json:"tool_ref"`
+		Server      string   `json:"server"`
+		Tool        string   `json:"tool"`
+		Summary     string   `json:"summary"`
+		Tags        []string `json:"tags"`
+		InputHint   string   `json:"input_hint,omitempty"`
+		Dangerous   bool     `json:"dangerous,omitempty"`
+		Destructive bool     `json:"destructive,omitempty"`
 	}
 	hits := make([]hitOut, 0, len(result.Hits))
 	for _, hit := range result.Hits {
 		hits = append(hits, hitOut{
-			Ref:       hit.Entry.Ref,
-			Server:    hit.Entry.Server,
-			Tool:      hit.Entry.Tool,
-			Summary:   hit.Entry.Summary,
-			Tags:      hit.Entry.Tags,
-			InputHint: hit.Entry.InputHint,
-			Dangerous: hit.Entry.Dangerous,
+			Ref:         hit.Entry.Ref,
+			Server:      hit.Entry.Server,
+			Tool:        hit.Entry.Tool,
+			Summary:     hit.Entry.Summary,
+			Tags:        hit.Entry.Tags,
+			InputHint:   hit.Entry.InputHint,
+			Dangerous:   hit.Entry.Dangerous,
+			Destructive: hit.Entry.Annotations.DestructiveHint,
 		})
 	}
 
@@ -151,6 +153,14 @@ func (h *Handlers) Call(ctx context.Context, args map[string]any) (string, error
 	}
 	if err := h.policy.Check(user, server, tool); err != nil {
 		return "", err
+	}
+
+	// deny_destructive: reject tools that self-report as destructive,
+	// even if they aren't in the operator's dangerous_tools list.
+	if h.cfg.Get().Proxy.DenyDestructive {
+		if entry, ok := h.cat.Describe(server + "/" + tool); ok && entry.Annotations.DestructiveHint {
+			return "", fmt.Errorf("call: tool %s/%s is destructive and deny_destructive is set", server, tool)
+		}
 	}
 
 	toolArgs := extractArguments(args)
@@ -301,6 +311,7 @@ func (h *Handlers) DescribeTool(ctx context.Context, args map[string]any) (strin
 		"tags":         entry.Tags,
 		"input_schema": json.RawMessage(entry.InputSchema),
 		"dangerous":    entry.Dangerous,
+		"annotations":  entry.Annotations,
 	}
 	b, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {

@@ -18,11 +18,22 @@ import (
 	"github.com/subconscious-labs/lazy-mcp/internal/session"
 )
 
+// ToolAnnotations mirrors the MCP tools/list annotations. All fields
+// are hints, not guarantees; clients must not rely on them for safety.
+type ToolAnnotations struct {
+	Title           string `json:"title,omitempty"`
+	ReadOnlyHint    bool   `json:"readOnlyHint,omitempty"`
+	DestructiveHint bool   `json:"destructiveHint,omitempty"`
+	IdempotentHint  bool   `json:"idempotentHint,omitempty"`
+	OpenWorldHint   bool   `json:"openWorldHint,omitempty"`
+}
+
 // ToolInfo is a normalized tool descriptor from a backend.
 type ToolInfo struct {
 	Name        string
 	Description string
 	InputSchema json.RawMessage
+	Annotations ToolAnnotations
 }
 
 // Backend is a running backend session.
