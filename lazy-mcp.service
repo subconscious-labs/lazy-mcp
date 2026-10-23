@@ -1,0 +1,27 @@
+[Unit]
+Description=lazy-mcp MCP proxy daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=lazy-mcp
+Group=lazy-mcp
+WorkingDirectory=/etc/lazy-mcp
+ExecStart=/usr/local/bin/lazy-mcp --config /etc/lazy-mcp/config.yaml
+EnvironmentFile=-/etc/lazy-mcp/env
+Restart=on-failure
+RestartSec=5s
+
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+# Hardening (adjust paths to your layout)
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/log/lazy-mcp /var/lib/node_exporter/textfile_collector
+
+[Install]
+WantedBy=multi-user.target

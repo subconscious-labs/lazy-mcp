@@ -10,6 +10,12 @@ import (
 
 // ProxyConfig holds proxy-level tunables.
 type ProxyConfig struct {
+	// Transport selects which frontend(s) to run:
+	//   "stdio" — subprocess of an MCP client (chatd-style bridge).
+	//   "http"  — standalone daemon behind proxy.http.addr.
+	//   "both"  — both; stops when stdio EOFs (migration mode).
+	// Empty auto-picks: http if proxy.http.addr is set, stdio otherwise.
+	Transport        string        `yaml:"transport"`
 	HTTP             HTTPConfig    `yaml:"http"`
 	ToolPrefix       string        `yaml:"tool_prefix"`
 	MaxSearchResults int           `yaml:"max_search_results"`
@@ -283,6 +289,16 @@ func Load(path string) (*Config, error) {
 
 // validate checks constraints that yaml parsing alone cannot enforce.
 func (c *Config) validate() error {
+	switch c.Proxy.Transport {
+	case "", "stdio", "http", "both":
+	default:
+		return fmt.Errorf("proxy.transport: must be stdio, http or both (got %q)",
+			c.Proxy.Transport)
+	}
+	if (c.Proxy.Transport == "http" || c.Proxy.Transport == "both") &&
+		c.Proxy.HTTP.Addr == "" {
+		return fmt.Errorf("proxy.transport=%s requires proxy.http.addr", c.Proxy.Transport)
+	}
 	if c.Proxy.MetricsFile != "" {
 		switch c.Proxy.MetricsInterval {
 		case 15 * time.Second, 30 * time.Second, 60 * time.Second:

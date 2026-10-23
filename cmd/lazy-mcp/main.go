@@ -82,32 +82,31 @@ func main() {
 	)
 
 	holder := config.NewHolder(cfg)
-
 	pol := policy.New(holder)
 	brok := broker.New(holder, pol, log)
 	cat := catalog.New(holder, brok, pol, log)
 	srv := mcp.NewServer(holder, brok, cat, pol, log)
 
-	var hubSrv *hub.Hub
-	if cfg.Proxy.HTTP.Addr != "" {
-		hubSrv = hub.New(holder, srv, log)
-		brok.SetNotificationHandler(func(server, method string, params json.RawMessage) {
-			if method == "notifications/tools/list_changed" {
-				cat.InvalidateServer(server)
-			}
-			hubSrv.OnDownstreamNotification(server, method, params)
-		})
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// Resolve transport.
+	transport := cfg.Proxy.Transport
+	if transport == "" {
+		if cfg.Proxy.HTTP.Addr != "" {
+			transport = "http"
+		} else {
+			transport = "stdio"
+		}
+	}
+	runStdio := transport == "stdio" || transport == "both"
+	runHTTP := transport == "http" || transport == "both"
 
 	if cfg.Proxy.Warmup {
 		if err := cat.WarmUp(ctx); err != nil {
 			log.Warn("warmup error", "err", err)
 		}
 	}
-
 	brok.StartIdleReaper(ctx)
 
 	if cfg.Proxy.MetricsFile != "" {
@@ -135,11 +134,22 @@ func main() {
 		log.Info("metrics writer started", "path", path, "interval", interval.String())
 	}
 
-	// Signal handling: SIGINT/SIGTERM trigger graceful shutdown;
-	// SIGHUP reloads the config in place.
+	// HTTP hub.
+	var hubSrv *hub.Hub
+	var hubErrCh chan error
+	if runHTTP {
+		hubSrv = hub.New(holder, srv, log)
+		brok.SetNotificationHandler(func(server, method string, params json.RawMessage) {
+			if method == "notifications/tools/list_changed" {
+				cat.InvalidateServer(server)
+			}
+			hubSrv.OnDownstreamNotification(server, method, params)
+		})
+	}
+
+	// Signals (SIGHUP reload + INT/TERM shutdown) — как было.
 	sigCh := make(chan os.Signal, 4)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
-
 	go func() {
 		for {
 			select {
@@ -148,9 +158,8 @@ func main() {
 			case sig := <-sigCh:
 				switch sig {
 				case syscall.SIGHUP:
-					reload(*cfgPath, holder, brok, cat, log)
+					reload(*cfgPath, holder, pol, brok, cat, log)
 				case syscall.SIGINT, syscall.SIGTERM:
-					// Restore default handling so a second signal kills.
 					signal.Stop(sigCh)
 					log.Info("shutdown signal received", "sig", sig.String())
 					cancel()
@@ -160,57 +169,73 @@ func main() {
 		}
 	}()
 
-	log.Info("ready", "transport", "stdio")
-
-	runErr := make(chan error, 1)
-	go func() {
-		runErr <- srv.Run(ctx, os.Stdin, os.Stdout)
-	}()
-
 	if hubSrv != nil {
-		go func() {
-			if err := hubSrv.Run(ctx); err != nil {
-				log.Error("hub error", "err", err)
-				cancel()
-			}
-		}()
-		log.Info("http hub enabled", "addr", cfg.Proxy.HTTP.Addr)
+		hubErrCh = make(chan error, 1)
+		go func() { hubErrCh <- hubSrv.Run(ctx) }()
 	}
+
+	var runErr chan error
+	if runStdio {
+		runErr = make(chan error, 1)
+		go func() { runErr <- srv.Run(ctx, os.Stdin, os.Stdout) }()
+	}
+
+	log.Info("ready", "transport", transport, "http_addr", cfg.Proxy.HTTP.Addr)
 
 	exitCode := 0
 
-	select {
-	case err := <-runErr:
-		if err != nil && !errors.Is(err, context.Canceled) {
-			log.Error("server error", "err", err)
-			exitCode = 1
-		} else {
-			log.Info("server exited")
-		}
-
-	case <-ctx.Done():
-		grace := cfg.Proxy.ShutdownTimeout
-		log.Info("shutdown: draining in-flight work", "grace", grace.String())
-
+	if runStdio {
+		// Legacy path: stdio is the primary transport. Exit when it
+		// EOFs (client disconnected) or when ctx is cancelled.
 		select {
 		case err := <-runErr:
 			if err != nil && !errors.Is(err, context.Canceled) {
-				log.Warn("server error during drain", "err", err)
+				log.Error("server error", "err", err)
+				exitCode = 1
+			} else {
+				log.Info("server exited")
 			}
-			log.Info("shutdown: drained cleanly")
-		case <-time.After(grace):
-			log.Warn("shutdown: grace period expired, forcing exit")
+		case <-ctx.Done():
+			grace := cfg.Proxy.ShutdownTimeout
+			log.Info("shutdown: draining in-flight work", "grace", grace.String())
+			select {
+			case err := <-runErr:
+				if err != nil && !errors.Is(err, context.Canceled) {
+					log.Warn("server error during drain", "err", err)
+				}
+				log.Info("shutdown: drained cleanly")
+			case <-time.After(grace):
+				log.Warn("shutdown: grace period expired")
+			}
+		}
+	} else {
+		// HTTP-only path: daemon. Exit on SIGTERM/SIGINT or fatal hub error.
+		select {
+		case err := <-hubErrCh:
+			if err != nil && !errors.Is(err, context.Canceled) {
+				log.Error("hub error", "err", err)
+				exitCode = 1
+			} else {
+				log.Info("hub exited")
+			}
+		case <-ctx.Done():
+			// hub.Run already calls Shutdown on ctx.Done; just wait briefly
+			// for its graceful stop.
+			select {
+			case <-hubErrCh:
+			case <-time.After(cfg.Proxy.ShutdownTimeout):
+				log.Warn("shutdown: grace period expired")
+			}
 		}
 	}
 
 	log.Info("stopping backends")
 	brok.StopAll()
-
 	os.Exit(exitCode)
 }
 
 // reload loads cfgPath and applies the new config in place.
-func reload(cfgPath string, holder *config.Holder, brok *broker.Broker, cat *catalog.Catalog, log *logx.Logger) {
+func reload(cfgPath string, holder *config.Holder, pol *policy.Policy, brok *broker.Broker, cat *catalog.Catalog, log *logx.Logger) {
 	log.Info("SIGHUP: reloading config", "path", cfgPath)
 
 	newCfg, err := config.Load(cfgPath)
@@ -222,6 +247,8 @@ func reload(cfgPath string, holder *config.Holder, brok *broker.Broker, cat *cat
 		log.Warn("SIGHUP: config: " + w)
 	}
 	old := holder.Swap(newCfg)
+	pol.Invalidate()
+	cat.Invalidate()
 	brok.ApplyConfig(old, newCfg)
 	cat.ApplyConfig(newCfg)
 

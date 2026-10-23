@@ -51,8 +51,12 @@ auth:
   #     role: admin
 
 proxy:
-  # Prefix for meta-tool names exposed to the model
-  tool_prefix: "meta"
+  # Which frontend(s) to run:
+  #   stdio — subprocess of an MCP client (chatd, IDE, etc).
+  #   http  — standalone daemon on proxy.http.addr.
+  #   both  — both; exits when the stdio client disconnects.
+  # Empty auto-picks: http if http.addr is set, stdio otherwise.
+  transport: "stdio"
   # HTTP MCP transport. Empty addr keeps stdio only.
   http:
     addr: ""                      # e.g. ":3333"
@@ -60,6 +64,8 @@ proxy:
     allowed_origins:
       - "http://localhost:*"
       - "http://127.0.0.1:*"
+  # Prefix for meta-tool names exposed to the model
+  tool_prefix: "meta"
   # Max results returned by search
   max_search_results: 8
   # Warm up all servers at start instead of lazy init

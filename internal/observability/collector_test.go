@@ -126,3 +126,40 @@ func TestEscapeLabel(t *testing.T) {
 		}
 	}
 }
+
+func TestHubMetrics_Render(t *testing.T) {
+	c := NewCollector()
+	c.SetSessionsActive(3)
+	c.IncSessionCreated()
+	c.IncSessionCreated()
+	c.IncNotificationsSent()
+	c.IncAuthFailures()
+
+	out := string(c.Render())
+	for _, want := range []string{
+		"lazy_mcp_sessions_active 3",
+		"lazy_mcp_sessions_created_total 2",
+		"lazy_mcp_notifications_sent_total 1",
+		"lazy_mcp_auth_failures_total 1",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+}
+
+func TestHubMetrics_ZeroEmitted(t *testing.T) {
+	// Series must exist even when nothing has happened yet, so that
+	// Prometheus alerts on missing series don't false-positive at boot.
+	out := string(NewCollector().Render())
+	for _, want := range []string{
+		"lazy_mcp_sessions_active 0",
+		"lazy_mcp_sessions_created_total 0",
+		"lazy_mcp_notifications_sent_total 0",
+		"lazy_mcp_auth_failures_total 0",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+}

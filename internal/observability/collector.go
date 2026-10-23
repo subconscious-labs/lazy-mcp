@@ -95,6 +95,12 @@ type Collector struct {
 	circuit map[string]int
 	starts  map[string]uint64
 	catalog map[string]int
+
+	// Hub metrics.
+	sessionsActive    int
+	sessionsCreated   uint64
+	notificationsSent uint64
+	authFailures      uint64
 }
 
 // NewCollector returns a fresh collector with default histogram bounds.
@@ -155,6 +161,34 @@ func (c *Collector) SetCatalogSize(server string, n int) {
 	c.mu.Unlock()
 }
 
+// SetSessionsActive records the current number of open HTTP sessions.
+func (c *Collector) SetSessionsActive(n int) {
+	c.mu.Lock()
+	c.sessionsActive = n
+	c.mu.Unlock()
+}
+
+// IncSessionCreated increments the cumulative session counter.
+func (c *Collector) IncSessionCreated() {
+	c.mu.Lock()
+	c.sessionsCreated++
+	c.mu.Unlock()
+}
+
+// IncNotificationsSent increments the cumulative notification counter.
+func (c *Collector) IncNotificationsSent() {
+	c.mu.Lock()
+	c.notificationsSent++
+	c.mu.Unlock()
+}
+
+// IncAuthFailures increments the cumulative auth-failure counter.
+func (c *Collector) IncAuthFailures() {
+	c.mu.Lock()
+	c.authFailures++
+	c.mu.Unlock()
+}
+
 // Render produces the Prometheus text exposition payload.
 func (c *Collector) Render() []byte {
 	c.mu.Lock()
@@ -166,6 +200,24 @@ func (c *Collector) Render() []byte {
 	help(&b, "lazy_mcp_info", "Build information.")
 	typ(&b, "lazy_mcp_info", "gauge")
 	fmt.Fprintf(&b, "lazy_mcp_info{version=\"%s\"} 1\n", escapeLabel(Version))
+
+	// Hub metrics — always emitted, so the series exist even before
+	// the first request (alerts on missing series fail otherwise).
+	help(&b, "lazy_mcp_sessions_active", "Currently open HTTP sessions.")
+	typ(&b, "lazy_mcp_sessions_active", "gauge")
+	fmt.Fprintf(&b, "lazy_mcp_sessions_active %d\n", c.sessionsActive)
+
+	help(&b, "lazy_mcp_sessions_created_total", "Cumulative HTTP sessions created.")
+	typ(&b, "lazy_mcp_sessions_created_total", "counter")
+	fmt.Fprintf(&b, "lazy_mcp_sessions_created_total %d\n", c.sessionsCreated)
+
+	help(&b, "lazy_mcp_notifications_sent_total", "Cumulative downstream notifications broadcast to sessions.")
+	typ(&b, "lazy_mcp_notifications_sent_total", "counter")
+	fmt.Fprintf(&b, "lazy_mcp_notifications_sent_total %d\n", c.notificationsSent)
+
+	help(&b, "lazy_mcp_auth_failures_total", "Cumulative HTTP auth failures.")
+	typ(&b, "lazy_mcp_auth_failures_total", "counter")
+	fmt.Fprintf(&b, "lazy_mcp_auth_failures_total %d\n", c.authFailures)
 
 	// lazy_mcp_backend_starts_total
 	if len(c.starts) > 0 {

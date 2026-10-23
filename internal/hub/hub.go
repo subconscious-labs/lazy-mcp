@@ -18,6 +18,7 @@ import (
 	"github.com/subconscious-labs/lazy-mcp/internal/config"
 	"github.com/subconscious-labs/lazy-mcp/internal/logx"
 	"github.com/subconscious-labs/lazy-mcp/internal/mcp"
+	"github.com/subconscious-labs/lazy-mcp/internal/observability"
 	"github.com/subconscious-labs/lazy-mcp/internal/session"
 )
 
@@ -44,7 +45,9 @@ func (s *sessState) close() {
 	s.once.Do(func() { close(s.done) })
 }
 
-func (h *Hub) metricsAuthFailures() {} // placeholder; hook to observability later
+func (h *Hub) metricsAuthFailures() {
+	observability.Default().IncAuthFailures()
+}
 
 // New builds a Hub. It binds to cfg.Proxy.HTTP.Addr on Run.
 func New(cfg *config.Holder, srv *mcp.Server, log *logx.Logger) *Hub {
@@ -129,7 +132,9 @@ func (h *Hub) reapLoop(ctx context.Context) {
 					dead = append(dead, st)
 				}
 			}
+			active := len(h.sessions)
 			h.mu.Unlock()
+			observability.Default().SetSessionsActive(active)
 			for _, st := range dead {
 				h.log.Info("hub: reaping session", "id", st.sess.ID, "user", st.sess.User)
 				st.close()
@@ -254,7 +259,9 @@ func (h *Hub) handleDelete(w http.ResponseWriter, r *http.Request) {
 	h.mu.Lock()
 	st := h.sessions[id]
 	delete(h.sessions, id)
+	active := len(h.sessions)
 	h.mu.Unlock()
+	observability.Default().SetSessionsActive(active)
 	if st == nil {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
@@ -295,7 +302,12 @@ func (h *Hub) sessionForPost(w http.ResponseWriter, r *http.Request) (*session.S
 	}
 	h.mu.Lock()
 	h.sessions[sess.ID] = st
+	active := len(h.sessions)
 	h.mu.Unlock()
+
+	obs := observability.Default()
+	obs.IncSessionCreated()
+	obs.SetSessionsActive(active)
 
 	w.Header().Set("Mcp-Session-Id", sess.ID)
 	h.log.Info("hub: new session", "id", sess.ID, "user", user, "role", role)
@@ -378,6 +390,10 @@ func (h *Hub) broadcast(msg []byte) {
 		states = append(states, st)
 	}
 	h.mu.RUnlock()
+
+	if len(states) > 0 {
+		observability.Default().IncNotificationsSent()
+	}
 
 	for _, st := range states {
 		select {
