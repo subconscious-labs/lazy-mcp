@@ -8,10 +8,10 @@ version: 1
 #     - "conf.d/*.yaml"
 #
 # - Paths are relative to this file's directory; globs are supported.
-# - `proxy` and `auth` may appear only in this top-level file.
+# - `proxy` and `auth` may appear only in this top-level file
+#   (a `proxy:` or `auth:` block in an included file is a load error).
 # - `servers` merge by name; the last definition wins, with a warning.
-# - `auth.users` merge by name; duplicate names are an error.
-# - Nested `include:` is not allowed.
+# - Nested `include:` is not allowed (no cycles by construction).
 # - ${...} expansion works inside included files.
 
 # Substitutions
@@ -106,6 +106,15 @@ proxy:
   # Reject calls to tools whose downstream server marks
   # annotations.destructiveHint: true. Works without a manual list.
   deny_destructive: false
+  # Reject calls to tools listed in a server's dangerous_tools.
+  # The flag is metadata only by default; set to true to enforce.
+  deny_dangerous: false
+  # Per-(user, server, tool) token bucket. Opt-in; the typical
+  # single-agent setup does not need it.
+  rate_limit:
+    enabled: false
+    per_minute: 60
+    burst: 10
   # Circuit breaker: isolate a backend after N consecutive transport-level
   # failures. Tool-level errors (isError:true) do NOT count.
   circuit_breaker:
@@ -150,6 +159,10 @@ servers:
       DAV_PASSWORD: secret
     autostart: false
     enabled: true
+    # If non-empty, only these tools are visible and callable (even for admin).
+    allowed_tools: []
+    # Always hidden and rejected. Takes precedence over allowed_tools.
+    denied_tools: []
 
   - name: notes
     transport: stdio
@@ -162,9 +175,11 @@ servers:
 
 # Reloading
 # ---------
-# Send SIGHUP to lazy-mcp to reload this file in place:
+# Three ways to reload this file in place:
 #
-#   pkill -HUP -f '/usr/local/bin/lazy-mcp'
+#   sudo systemctl reload lazy-mcp.service   # if run as a systemd unit
+#   pkill -HUP -f '/usr/local/bin/lazy-mcp'  # any process owner
+#   meta_reload (admin session)               # from a chat / HTTP client
 #
 # Applied live: proxy.* tunables, added/removed servers, command/args/env
 # changes (existing backends for changed servers are stopped and will
@@ -172,3 +187,4 @@ servers:
 #
 # NOT applied live (require full restart): proxy.log_file,
 # proxy.metrics_file, proxy.metrics_interval, proxy.cursor_ttl.
+# Reload returns a warning when one of these changed.
