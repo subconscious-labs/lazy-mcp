@@ -1,10 +1,12 @@
 .PHONY: build clean test test-race lint vet bench ci check cover cover-html cover-check
 
 GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-LDFLAGS := -s -w -X github.com/nikita-popov/lazy-mcp/internal/observability.Version=$(GIT_COMMIT)
+LDFLAGS := -s -w -X github.com/subconscious-labs/lazy-mcp/internal/observability.Version=$(GIT_COMMIT)
 BIN := bin/lazy-mcp
 COVERAGE  := coverage.out
 COVER_MIN ?= 50
+GOLANGCI_VERSION ?= v2.14.0
+GOLANGCI_BIN     := $(shell go env GOPATH)/bin/golangci-lint
 
 build:
 	go build -trimpath -ldflags="$(LDFLAGS)" -o $(BIN) ./cmd/lazy-mcp
@@ -22,7 +24,11 @@ vet:
 	go vet ./...
 
 lint:
-	@command -v golangci-lint >/dev/null || { echo "golangci-lint not installed: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest"; exit 1; }
+	@command -v golangci-lint >/dev/null || { \
+		echo "golangci-lint not found. Install:"; \
+		echo "  curl -sSfL https://golangci-lint.run/install.sh | sh -s -- -b \$$(go env GOPATH)/bin $(GOLANGCI_VERSION)"; \
+		exit 1; \
+	}
 	golangci-lint run ./...
 
 bench:

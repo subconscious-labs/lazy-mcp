@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"github.com/subconscious-labs/lazy-mcp/internal/broker"
 	"github.com/subconscious-labs/lazy-mcp/internal/catalog"
 	"github.com/subconscious-labs/lazy-mcp/internal/config"
+	"github.com/subconscious-labs/lazy-mcp/internal/hub"
 	"github.com/subconscious-labs/lazy-mcp/internal/logx"
 	"github.com/subconscious-labs/lazy-mcp/internal/mcp"
 	"github.com/subconscious-labs/lazy-mcp/internal/observability"
@@ -79,6 +81,17 @@ func main() {
 	brok := broker.New(holder, log)
 	cat := catalog.New(holder, brok, log)
 	srv := mcp.NewServer(holder, brok, cat, log)
+
+	var hubSrv *hub.Hub
+	if cfg.Proxy.HTTP.Addr != "" {
+		hubSrv = hub.New(holder, srv, log)
+		brok.SetNotificationHandler(func(server, method string, params json.RawMessage) {
+			if method == "notifications/tools/list_changed" {
+				cat.InvalidateServer(server)
+			}
+			hubSrv.OnDownstreamNotification(server, method, params)
+		})
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -147,6 +160,16 @@ func main() {
 	go func() {
 		runErr <- srv.Run(ctx, os.Stdin, os.Stdout)
 	}()
+
+	if hubSrv != nil {
+		go func() {
+			if err := hubSrv.Run(ctx); err != nil {
+				log.Error("hub error", "err", err)
+				cancel()
+			}
+		}()
+		log.Info("http hub enabled", "addr", cfg.Proxy.HTTP.Addr)
+	}
 
 	exitCode := 0
 

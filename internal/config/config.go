@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"fmt"
 	"os"
 	"time"
@@ -10,6 +11,7 @@ import (
 
 // ProxyConfig holds proxy-level tunables.
 type ProxyConfig struct {
+	HTTP             HTTPConfig    `yaml:"http"`
 	ToolPrefix       string        `yaml:"tool_prefix"`
 	MaxSearchResults int           `yaml:"max_search_results"`
 	Warmup           bool          `yaml:"warmup"`
@@ -59,6 +61,24 @@ type ProxyConfig struct {
 	LogFileCompress bool `yaml:"log_file_compress"`
 }
 
+type HTTPConfig struct {
+	Addr           string        `yaml:"addr"` // "" = stdio only
+	SessionTTL     time.Duration `yaml:"session_ttl"`
+	AllowedOrigins []string      `yaml:"allowed_origins"`
+}
+
+type AuthUserConfig struct {
+	Name           string   `yaml:"name"`
+	TokenSHA256    string   `yaml:"token_sha256"`
+	Role           string   `yaml:"role"` // "agent" | "admin"
+	AllowedServers []string `yaml:"allowed_servers"`
+}
+
+type AuthConfig struct {
+	Enabled bool             `yaml:"enabled"`
+	Users   []AuthUserConfig `yaml:"users"`
+}
+
 // CircuitBreakerConfig controls per-backend failure isolation.
 type CircuitBreakerConfig struct {
 	// Enabled defaults to true when omitted. Explicitly set `enabled: false`
@@ -92,10 +112,20 @@ type Config struct {
 	Version int            `yaml:"version"`
 	Proxy   ProxyConfig    `yaml:"proxy"`
 	Servers []ServerConfig `yaml:"servers"`
+	Auth    AuthConfig     `yaml:"auth"`
 }
 
 // defaults applies reasonable defaults.
 func (c *Config) defaults() {
+	if c.Proxy.HTTP.SessionTTL == 0 {
+		c.Proxy.HTTP.SessionTTL = 30 * time.Minute
+	}
+	if c.Proxy.HTTP.Addr != "" && len(c.Proxy.HTTP.AllowedOrigins) == 0 {
+		c.Proxy.HTTP.AllowedOrigins = []string{
+			"http://localhost:*",
+			"http://127.0.0.1:*",
+		}
+	}
 	if c.Proxy.ToolPrefix == "" {
 		c.Proxy.ToolPrefix = "meta"
 	}
@@ -212,6 +242,30 @@ func (c *Config) validate() error {
 			return fmt.Errorf(
 				"proxy.metrics_interval: must be 15s, 30s or 60s (got %s)",
 				c.Proxy.MetricsInterval)
+		}
+	}
+	if c.Auth.Enabled {
+		if len(c.Auth.Users) == 0 {
+			return fmt.Errorf("auth.enabled is true but auth.users is empty")
+		}
+		names := map[string]bool{}
+		for i, u := range c.Auth.Users {
+			if u.Name == "" {
+				return fmt.Errorf("auth.users[%d]: name is required", i)
+			}
+			if names[u.Name] {
+				return fmt.Errorf("auth.users[%d]: duplicate name %q", i, u.Name)
+			}
+			names[u.Name] = true
+			if u.Role != "agent" && u.Role != "admin" {
+				return fmt.Errorf("auth.users[%d] %q: role must be agent or admin", i, u.Name)
+			}
+			if len(u.TokenSHA256) != 64 {
+				return fmt.Errorf("auth.users[%d] %q: token_sha256 must be 64 hex chars", i, u.Name)
+			}
+			if _, err := hex.DecodeString(u.TokenSHA256); err != nil {
+				return fmt.Errorf("auth.users[%d] %q: token_sha256 not hex: %w", i, u.Name, err)
+			}
 		}
 	}
 	return nil

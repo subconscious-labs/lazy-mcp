@@ -14,6 +14,7 @@ import (
 	"github.com/subconscious-labs/lazy-mcp/internal/config"
 	"github.com/subconscious-labs/lazy-mcp/internal/logx"
 	"github.com/subconscious-labs/lazy-mcp/internal/meta"
+	"github.com/subconscious-labs/lazy-mcp/internal/session"
 )
 
 // MetaHandlers is the contract the MCP frontend needs from the meta
@@ -94,7 +95,8 @@ func (s *Server) Run(ctx context.Context, r io.Reader, w io.Writer) error {
 				continue
 			}
 			s.log.Debug("req", "id", req.ID, "method", req.Method)
-			resp := s.handle(ctx, req.ID, req.Method, req.Params)
+			sessCtx := session.WithContext(ctx, session.LocalAdmin())
+			resp := s.handle(sessCtx, req.ID, req.Method, req.Params)
 			if resp != nil {
 				if err := enc.Encode(resp); err != nil {
 					return fmt.Errorf("encode response: %w", err)
@@ -102,6 +104,26 @@ func (s *Server) Run(ctx context.Context, r io.Reader, w io.Writer) error {
 			}
 		}
 	}
+}
+
+// Handle processes a single JSON-RPC request (raw bytes, no trailing
+// newline required) and returns the response object or nil for
+// notifications. Used by the HTTP hub; stdio mode goes through Run.
+func (s *Server) Handle(ctx context.Context, raw []byte) (any, error) {
+	var req struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      any             `json:"id"`
+		Method  string          `json:"method"`
+		Params  json.RawMessage `json:"params"`
+	}
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, fmt.Errorf("parse request: %w", err)
+	}
+	if req.JSONRPC != "2.0" {
+		return nil, fmt.Errorf("invalid jsonrpc version %q", req.JSONRPC)
+	}
+	s.log.Debug("req", "id", req.ID, "method", req.Method)
+	return s.handle(ctx, req.ID, req.Method, req.Params), nil
 }
 
 func (s *Server) handle(ctx context.Context, id any, method string, params json.RawMessage) any {

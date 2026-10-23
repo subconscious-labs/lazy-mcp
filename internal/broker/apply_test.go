@@ -167,7 +167,7 @@ func TestServerRestartRequired(t *testing.T) {
 		modify func(*config.ServerConfig)
 		want   bool
 	}{
-		{"identical", func(s *config.ServerConfig) {}, false},
+		{"identical", func(_ *config.ServerConfig) {}, false},
 		{"command changed", func(s *config.ServerConfig) { s.Command = "/bin/false" }, true},
 		{"args changed", func(s *config.ServerConfig) { s.Args = []string{"a", "c"} }, true},
 		{"args order", func(s *config.ServerConfig) { s.Args = []string{"b", "a"} }, true},

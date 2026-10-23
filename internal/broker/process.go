@@ -296,11 +296,7 @@ func (p *backendProcess) ListTools(ctx context.Context) ([]ToolInfo, error) {
 	}
 	tools := make([]ToolInfo, 0, len(lr.Tools))
 	for _, t := range lr.Tools {
-		tools = append(tools, ToolInfo{
-			Name:        t.Name,
-			Description: t.Description,
-			InputSchema: t.InputSchema,
-		})
+		tools = append(tools, ToolInfo(t))
 	}
 	return tools, nil
 }

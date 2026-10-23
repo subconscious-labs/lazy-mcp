@@ -1,16 +1,11 @@
-# golangci-lint config. Kept minimal: only linters we actively want,
-# so results do not drift with golangci-lint version defaults.
+version: "2"
 run:
-  timeout: 5m
   tests: true
-
 linters:
-  disable-all: true
+  default: none
   enable:
     - errcheck
     - errorlint
-    - gofmt
-    - goimports
     - govet
     - ineffassign
     - misspell
@@ -20,44 +15,58 @@ linters:
     - unconvert
     - unparam
     - unused
-
-linters-settings:
-  errcheck:
-    # Ignore common fire-and-forget writers/closers.
-    exclude-functions:
-      - (io.Closer).Close
-      - (*os.File).Close
-      - fmt.Fprintf
-      - fmt.Fprintln
-      - (io.Writer).Write
-
-  revive:
+  settings:
+    errcheck:
+      exclude-functions:
+        - (io.Closer).Close
+        - (*os.File).Close
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (io.Writer).Write
+    revive:
+      rules:
+        - name: context-as-argument
+        - name: redefines-builtin-id
+        - name: increment-decrement
+        - name: blank-imports
+        - name: context-keys-type
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: if-return
+        - name: indent-error-flow
+        - name: range
+        - name: receiver-naming
+        - name: time-naming
+        - name: unexported-return
+        - name: unreachable-code
+        - name: unused-parameter
+        - name: var-declaration
+        - name: var-naming
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
     rules:
-      # Contexts first, no shadowing builtins — the two rules we hit.
-      - name: context-as-argument
-      - name: redefines-builtin-id
-      - name: increment-decrement
-      # Keep the rest of the default revive set.
-      - name: blank-imports
-      - name: context-keys-type
-      - name: error-return
-      - name: error-strings
-      - name: error-naming
-      - name: if-return
-      - name: indent-error-flow
-      - name: range
-      - name: receiver-naming
-      - name: time-naming
-      - name: unexported-return
-      - name: unreachable-code
-      - name: unused-parameter
-      - name: var-declaration
-      - name: var-naming
-
-issues:
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - errcheck
-        - unparam
-        - unused
+      - linters:
+          - errcheck
+          - unparam
+          - unused
+        path: _test\.go
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

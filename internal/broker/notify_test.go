@@ -81,7 +81,7 @@ func TestBroker_SetNotificationHandler_PropagatesToRunning(t *testing.T) {
 
 	var hits int
 	var mu sync.Mutex
-	b.SetNotificationHandler(func(server, method string, params json.RawMessage) {
+	b.SetNotificationHandler(func(_ string, _ string, _ json.RawMessage) {
 		mu.Lock()
 		hits++
 		mu.Unlock()

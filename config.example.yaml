@@ -21,9 +21,31 @@ version: 1
 # Expanded after YAML parsing; values that look like bools or numbers
 # after expansion are re-tagged so `enabled: ${SVC_ENABLED}` works.
 
+# Authentication (HTTP transport only; stdio ignores this).
+# Tokens are stored as SHA-256 hashes. Generate with:
+#   printf %s "$TOKEN" | sha256sum | awk '{print $1}'
+auth:
+  enabled: false
+  users: []
+  # users:
+  #   - name: elsa
+  #     token_sha256: "<64 hex chars>"
+  #     role: agent
+  #     allowed_servers: [git, tasks, ssh]
+  #   - name: admin
+  #     token_sha256: "<64 hex chars>"
+  #     role: admin
+
 proxy:
   # Prefix for meta-tool names exposed to the model
   tool_prefix: "meta"
+  # HTTP MCP transport. Empty addr keeps stdio only.
+  http:
+    addr: ""                      # e.g. ":3333"
+    session_ttl: 30m
+    allowed_origins:
+      - "http://localhost:*"
+      - "http://127.0.0.1:*"
   # Max results returned by search
   max_search_results: 8
   # Warm up all servers at start instead of lazy init

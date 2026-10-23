@@ -181,7 +181,7 @@ func TestRun_UnknownMethod(t *testing.T) {
 func TestRun_ToolsCall_Success(t *testing.T) {
 	gotArgs := map[string]any{}
 	h := &fakeHandlers{
-		callFn: func(ctx context.Context, args map[string]any) (string, error) {
+		callFn: func(_ context.Context, args map[string]any) (string, error) {
 			for k, v := range args {
 				gotArgs[k] = v
 			}
@@ -209,7 +209,7 @@ func TestRun_ToolsCall_Success(t *testing.T) {
 
 func TestRun_ToolsCall_HandlerError(t *testing.T) {
 	h := &fakeHandlers{
-		callFn: func(ctx context.Context, args map[string]any) (string, error) {
+		callFn: func(_ context.Context, _ map[string]any) (string, error) {
 			return "", errors.New("boom")
 		},
 	}
@@ -325,7 +325,7 @@ func TestRun_EncodeError(t *testing.T) {
 
 type failingWriter struct{}
 
-func (failingWriter) Write(p []byte) (int, error) { return 0, errors.New("nope") }
+func (failingWriter) Write(_ []byte) (int, error) { return 0, errors.New("nope") }
 
 // ---- lifecycle ----
 
