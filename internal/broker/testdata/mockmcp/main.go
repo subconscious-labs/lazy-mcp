@@ -115,6 +115,16 @@ func main() {
 					"text": fmt.Sprintf("called %s args=%v", p.Name, p.Arguments),
 				}},
 			})
+			if notifyMsg := os.Getenv("MOCK_NOTIFY_MESSAGE"); notifyMsg != "" {
+				_ = out.Encode(map[string]any{
+					"jsonrpc": "2.0",
+					"method":  "notifications/message",
+					"params": map[string]any{
+						"level": "info",
+						"data":  notifyMsg,
+					},
+				})
+			}
 		}
 	}
 }

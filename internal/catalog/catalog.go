@@ -357,3 +357,16 @@ func (c *Catalog) ApplyConfig(cfg *config.Config) {
 		c.log.Info("reload: dropped catalog entries", "count", removed)
 	}
 }
+
+// InvalidateServer drops the refresh timestamp for serverName so the
+// next Search or DescribeTool re-fetches tools/list. Called when a
+// downstream backend signals notifications/tools/list_changed.
+func (c *Catalog) InvalidateServer(serverName string) {
+	c.mu.Lock()
+	_, had := c.lastRefresh[serverName]
+	delete(c.lastRefresh, serverName)
+	c.mu.Unlock()
+	if had {
+		c.log.Info("catalog invalidated", "server", serverName)
+	}
+}

@@ -32,12 +32,18 @@ var ErrRPCClientError = errors.New("rpc client error")
 type rpcMessage struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      *int64          `json:"id"`
-	Result  json.RawMessage `json:"result"`
+	Method  string          `json:"method,omitempty"`
+	Params  json.RawMessage `json:"params,omitempty"`
+	Result  json.RawMessage `json:"result,omitempty"`
 	Error   *struct {
 		Code    int    `json:"code"`
 		Message string `json:"message"`
-	} `json:"error"`
+	} `json:"error,omitempty"`
 }
+
+// NotificationHandler receives MCP server→client notifications from a
+// downstream backend. method is e.g. "notifications/message".
+type NotificationHandler func(server, method string, params json.RawMessage)
 
 type backendProcess struct {
 	cfg config.ServerConfig
@@ -59,6 +65,8 @@ type backendProcess struct {
 
 	lastToolCall time.Time
 	startedAt    time.Time
+
+	notifHandler NotificationHandler // guarded by mu
 }
 
 func newBackendProcess(cfg config.ServerConfig, log *logx.Logger) *backendProcess {
@@ -170,9 +178,11 @@ func (p *backendProcess) readLoop(r io.Reader) {
 			continue // skip non-JSON / debug lines
 		}
 		if msg.ID == nil {
-			continue // notification, no waiter
+			if msg.Method != "" {
+				p.dispatchNotification(msg.Method, msg.Params)
+			}
+			continue // notification: no waiter
 		}
-
 		p.mu.Lock()
 		ch, ok := p.pending[*msg.ID]
 		if ok {
@@ -423,6 +433,28 @@ func (p *backendProcess) Stop() {
 	defer p.lifecycleMu.Unlock()
 	p.kill()
 	p.log.Info("backend stopped", "server", p.cfg.Name)
+}
+
+func (p *backendProcess) setNotificationHandler(h NotificationHandler) {
+	p.mu.Lock()
+	p.notifHandler = h
+	p.mu.Unlock()
+}
+
+func (p *backendProcess) dispatchNotification(method string, params json.RawMessage) {
+	p.mu.Lock()
+	h := p.notifHandler
+	p.mu.Unlock()
+	if h == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			p.log.Warn("notification handler panic",
+				"server", p.cfg.Name, "method", method, "recover", r)
+		}
+	}()
+	h(p.cfg.Name, method, params)
 }
 
 func buildEnv(cfg config.ServerConfig) []string {

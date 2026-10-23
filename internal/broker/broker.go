@@ -40,6 +40,9 @@ type Broker struct {
 
 	circuitsMu sync.Mutex
 	circuits   map[string]*circuit
+
+	notifMu      sync.RWMutex
+	notifHandler NotificationHandler
 }
 
 // New creates a Broker.
@@ -69,6 +72,7 @@ func (b *Broker) Ensure(ctx context.Context, serverName string) (Backend, error)
 	proc, exists := b.pool[serverName]
 	if !exists {
 		proc = newBackendProcess(srvcfg, b.log)
+		proc.setNotificationHandler(b.getNotificationHandler())
 		b.pool[serverName] = proc
 	}
 	b.mu.Unlock()
@@ -389,4 +393,28 @@ func (b *Broker) StopAll() {
 		b.log.Info("stopping backend", "server", name)
 		proc.Stop()
 	}
+}
+
+// SetNotificationHandler installs h for all downstream notifications.
+// Propagates to already-running backends and to backends started later.
+func (b *Broker) SetNotificationHandler(h NotificationHandler) {
+	b.notifMu.Lock()
+	b.notifHandler = h
+	b.notifMu.Unlock()
+
+	b.mu.Lock()
+	procs := make([]*backendProcess, 0, len(b.pool))
+	for _, p := range b.pool {
+		procs = append(procs, p)
+	}
+	b.mu.Unlock()
+	for _, p := range procs {
+		p.setNotificationHandler(h)
+	}
+}
+
+func (b *Broker) getNotificationHandler() NotificationHandler {
+	b.notifMu.RLock()
+	defer b.notifMu.RUnlock()
+	return b.notifHandler
 }
