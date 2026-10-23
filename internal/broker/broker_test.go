@@ -15,6 +15,7 @@ import (
 
 	"github.com/subconscious-labs/lazy-mcp/internal/config"
 	"github.com/subconscious-labs/lazy-mcp/internal/logx"
+	"github.com/subconscious-labs/lazy-mcp/internal/policy"
 )
 
 // mockMCPPath is set by TestMain; absolute path to the compiled mock server.
@@ -98,8 +99,8 @@ func newTestBroker(t *testing.T, servers []config.ServerConfig, opts brokerOpts)
 		},
 		Servers: servers,
 	}
-
-	b := New(config.NewHolder(cfg), logx.New(io.Discard))
+	holder := config.NewHolder(cfg)
+	b := New(holder, policy.New(config.NewHolder(cfg)), logx.New(io.Discard))
 	t.Cleanup(b.StopAll)
 	return b
 }

@@ -9,13 +9,15 @@ import (
 
 	"github.com/subconscious-labs/lazy-mcp/internal/config"
 	"github.com/subconscious-labs/lazy-mcp/internal/logx"
+	"github.com/subconscious-labs/lazy-mcp/internal/policy"
 )
 
 func testCatalogWithEntries(entries []ToolEntry) *Catalog {
 	cfg := &config.Config{
 		Proxy: config.ProxyConfig{ToolPrefix: "meta"},
 	}
-	c := New(config.NewHolder(cfg), nil, logx.New(io.Discard))
+	holder := config.NewHolder(cfg)
+	c := New(holder, nil, policy.New(holder), logx.New(io.Discard))
 	c.entries = entries
 	return c
 }
@@ -41,13 +43,13 @@ func TestSearch_TotalReflectsPreLimitCount(t *testing.T) {
 	c := testCatalogWithEntries(entries)
 
 	// No limit: total == hits count.
-	r := c.Search("list", 0)
+	r := c.Search("list", 0, nil)
 	if r.Total != 3 || len(r.Hits) != 3 {
 		t.Fatalf("no-limit: total=%d hits=%d, want 3/3", r.Total, len(r.Hits))
 	}
 
 	// Limit smaller than matches: hits capped, total intact.
-	r = c.Search("list", 2)
+	r = c.Search("list", 2, nil)
 	if r.Total != 3 {
 		t.Fatalf("total: got %d want 3", r.Total)
 	}
@@ -56,7 +58,7 @@ func TestSearch_TotalReflectsPreLimitCount(t *testing.T) {
 	}
 
 	// Limit larger than matches: no truncation.
-	r = c.Search("list", 100)
+	r = c.Search("list", 100, nil)
 	if r.Total != 3 || len(r.Hits) != 3 {
 		t.Fatalf("large-limit: total=%d hits=%d", r.Total, len(r.Hits))
 	}
@@ -69,7 +71,7 @@ func TestSearch_EmptyQueryTotal(t *testing.T) {
 	}
 	c := testCatalogWithEntries(entries)
 
-	r := c.Search("", 1)
+	r := c.Search("", 1, nil)
 	if r.Total != 2 {
 		t.Fatalf("total: got %d want 2", r.Total)
 	}
@@ -82,7 +84,7 @@ func TestSearch_NoMatchTotalZero(t *testing.T) {
 	entries := []ToolEntry{mkEntry("a", "t1", "")}
 	c := testCatalogWithEntries(entries)
 
-	r := c.Search("zzznotexist", 0)
+	r := c.Search("zzznotexist", 0, nil)
 	if r.Total != 0 || len(r.Hits) != 0 {
 		t.Fatalf("expected empty, got total=%d hits=%d", r.Total, len(r.Hits))
 	}
@@ -92,7 +94,7 @@ func TestServerStale(t *testing.T) {
 	cfg := &config.Config{
 		Proxy: config.ProxyConfig{ToolCacheTTL: 100 * time.Millisecond},
 	}
-	c := New(config.NewHolder(cfg), nil, logx.New(io.Discard))
+	c := New(config.NewHolder(cfg), nil, policy.New(config.NewHolder(cfg)), logx.New(io.Discard))
 
 	// Never refreshed: stale.
 	if !c.ServerStale("srv") {
@@ -118,7 +120,7 @@ func TestServerStale_ZeroTTLNeverStale(t *testing.T) {
 	cfg := &config.Config{
 		Proxy: config.ProxyConfig{ToolCacheTTL: 0},
 	}
-	c := New(config.NewHolder(cfg), nil, logx.New(io.Discard))
+	c := New(config.NewHolder(cfg), nil, policy.New(config.NewHolder(cfg)), logx.New(io.Discard))
 	if c.ServerStale("never-seen") {
 		t.Fatalf("ttl=0 should disable staleness")
 	}
@@ -155,7 +157,7 @@ func TestEntries_Snapshot(t *testing.T) {
 
 func TestRefreshServer_UnknownServer(t *testing.T) {
 	cfg := &config.Config{Proxy: config.ProxyConfig{ToolPrefix: "meta"}}
-	c := New(config.NewHolder(cfg), nil, logx.New(io.Discard))
+	c := New(config.NewHolder(cfg), nil, policy.New(config.NewHolder(cfg)), logx.New(io.Discard))
 	err := c.RefreshServer(context.Background(), "missing")
 	if err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("expected not-found error, got %v", err)
@@ -169,7 +171,7 @@ func TestApplyConfig_DropsDisabledEntries(t *testing.T) {
 		Proxy:   config.ProxyConfig{ToolPrefix: "meta"},
 		Servers: []config.ServerConfig{srvA, srvB},
 	}
-	c := New(config.NewHolder(cfg), nil, logx.New(io.Discard))
+	c := New(config.NewHolder(cfg), nil, policy.New(config.NewHolder(cfg)), logx.New(io.Discard))
 	c.entries = []ToolEntry{
 		mkEntry("a", "t1", ""),
 		mkEntry("a", "t2", ""),
@@ -216,7 +218,7 @@ func TestApplyConfig_DropsRemovedServer(t *testing.T) {
 		Proxy:   config.ProxyConfig{ToolPrefix: "meta"},
 		Servers: []config.ServerConfig{srvA},
 	}
-	c := New(config.NewHolder(cfg), nil, logx.New(io.Discard))
+	c := New(config.NewHolder(cfg), nil, policy.New(config.NewHolder(cfg)), logx.New(io.Discard))
 	c.entries = []ToolEntry{
 		mkEntry("a", "t1", ""),
 		mkEntry("b", "t1", ""), // b was never in the config, but in the index
@@ -240,7 +242,7 @@ func TestApplyConfig_NoopWhenNothingChanged(t *testing.T) {
 		Proxy:   config.ProxyConfig{ToolPrefix: "meta"},
 		Servers: []config.ServerConfig{srvA},
 	}
-	c := New(config.NewHolder(cfg), nil, logx.New(io.Discard))
+	c := New(config.NewHolder(cfg), nil, policy.New(config.NewHolder(cfg)), logx.New(io.Discard))
 	c.entries = []ToolEntry{mkEntry("a", "t1", "")}
 	c.lastRefresh["a"] = time.Now()
 
@@ -257,7 +259,7 @@ func TestApplyConfig_EmptyAfterAllDisabled(t *testing.T) {
 		Proxy:   config.ProxyConfig{ToolPrefix: "meta"},
 		Servers: []config.ServerConfig{srvA},
 	}
-	c := New(config.NewHolder(cfg), nil, logx.New(io.Discard))
+	c := New(config.NewHolder(cfg), nil, policy.New(config.NewHolder(cfg)), logx.New(io.Discard))
 	c.entries = []ToolEntry{mkEntry("a", "t1", "")}
 
 	newCfg := &config.Config{

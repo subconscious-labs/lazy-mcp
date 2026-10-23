@@ -14,6 +14,7 @@ import (
 	"github.com/subconscious-labs/lazy-mcp/internal/config"
 	"github.com/subconscious-labs/lazy-mcp/internal/logx"
 	"github.com/subconscious-labs/lazy-mcp/internal/meta"
+	"github.com/subconscious-labs/lazy-mcp/internal/policy"
 	"github.com/subconscious-labs/lazy-mcp/internal/session"
 )
 
@@ -35,8 +36,8 @@ type Server struct {
 }
 
 // NewServer creates a Server.
-func NewServer(cfg *config.Holder, brok *broker.Broker, cat *catalog.Catalog, log *logx.Logger) *Server {
-	return newServer(cfg, meta.New(cfg, brok, cat, log), log)
+func NewServer(cfg *config.Holder, brok *broker.Broker, cat *catalog.Catalog, pol *policy.Policy, log *logx.Logger) *Server {
+	return newServer(cfg, meta.New(cfg, brok, cat, pol, log), log)
 }
 
 // newServer is the constructor used by tests; it accepts any MetaHandlers

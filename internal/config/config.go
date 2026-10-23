@@ -48,6 +48,11 @@ type ProxyConfig struct {
 	MetricsInterval time.Duration `yaml:"metrics_interval"`
 	// CircuitBreaker isolates misbehaving backends.
 	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
+	// DenyDangerous rejects calls to tools listed in server.dangerous_tools.
+	// Default: false (dangerous is metadata only).
+	DenyDangerous bool `yaml:"deny_dangerous"`
+	// RateLimit caps call throughput per (user, server, tool).
+	RateLimit RateLimitConfig `yaml:"rate_limit"`
 	// LogFile, if set, receives the same JSONL stream as stderr. Empty
 	// means stderr only. Parent directories are created on demand.
 	LogFile string `yaml:"log_file"`
@@ -79,6 +84,16 @@ type AuthConfig struct {
 	Users   []AuthUserConfig `yaml:"users"`
 }
 
+// RateLimitConfig configures the per-(user, server, tool) token bucket.
+type RateLimitConfig struct {
+	// Enabled defaults to false. Rate limiting is opt-in.
+	Enabled bool `yaml:"enabled"`
+	// PerMinute is the sustained call rate. Default: 60.
+	PerMinute int `yaml:"per_minute"`
+	// Burst is the maximum instantaneous burst. Default: 10.
+	Burst int `yaml:"burst"`
+}
+
 // CircuitBreakerConfig controls per-backend failure isolation.
 type CircuitBreakerConfig struct {
 	// Enabled defaults to true when omitted. Explicitly set `enabled: false`
@@ -105,6 +120,12 @@ type ServerConfig struct {
 	Autostart      bool              `yaml:"autostart"`
 	Enabled        bool              `yaml:"enabled"`
 	DangerousTools []string          `yaml:"dangerous_tools"`
+	// AllowedTools, if non-empty, restricts the server to only these tools.
+	// Both catalog visibility and call dispatch honor it.
+	AllowedTools []string `yaml:"allowed_tools"`
+	// DeniedTools lists tools that must not be called or indexed.
+	// Takes precedence over DangerousTools.
+	DeniedTools []string `yaml:"denied_tools"`
 }
 
 // Config is the root config struct.
@@ -166,6 +187,12 @@ func (c *Config) defaults() {
 	}
 	if c.Proxy.CircuitBreaker.Cooldown <= 0 {
 		c.Proxy.CircuitBreaker.Cooldown = 30 * time.Second
+	}
+	if c.Proxy.RateLimit.PerMinute <= 0 {
+		c.Proxy.RateLimit.PerMinute = 60
+	}
+	if c.Proxy.RateLimit.Burst <= 0 {
+		c.Proxy.RateLimit.Burst = 10
 	}
 	if c.Proxy.LogFileMaxMB <= 0 {
 		c.Proxy.LogFileMaxMB = 50

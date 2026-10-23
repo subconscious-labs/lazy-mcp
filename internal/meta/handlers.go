@@ -14,32 +14,47 @@ import (
 	"github.com/subconscious-labs/lazy-mcp/internal/catalog"
 	"github.com/subconscious-labs/lazy-mcp/internal/config"
 	"github.com/subconscious-labs/lazy-mcp/internal/logx"
+	"github.com/subconscious-labs/lazy-mcp/internal/policy"
+	"github.com/subconscious-labs/lazy-mcp/internal/session"
 )
 
 // Handlers holds dependencies for meta-tool execution.
 type Handlers struct {
-	cfg   *config.Holder
-	brok  *broker.Broker
-	cat   *catalog.Catalog
-	log   *logx.Logger
-	pager *PageStore
+	cfg    *config.Holder
+	brok   *broker.Broker
+	cat    *catalog.Catalog
+	policy *policy.Policy
+	log    *logx.Logger
+	pager  *PageStore
 }
 
 // New creates Handlers.
-func New(cfg *config.Holder, brok *broker.Broker, cat *catalog.Catalog, log *logx.Logger) *Handlers {
+func New(cfg *config.Holder, brok *broker.Broker, cat *catalog.Catalog, pol *policy.Policy, log *logx.Logger) *Handlers {
 	return &Handlers{
-		cfg:   cfg,
-		brok:  brok,
-		cat:   cat,
-		log:   log,
-		pager: NewPageStore(cfg.Get().Proxy.CursorTTL),
+		cfg:    cfg,
+		brok:   brok,
+		cat:    cat,
+		policy: pol,
+		log:    log,
+		pager:  NewPageStore(cfg.Get().Proxy.CursorTTL),
 	}
+}
+
+// sessionUser returns the session user ("" means admin/local).
+func sessionUser(ctx context.Context) (string, *session.Session) {
+	sess, _ := session.FromContext(ctx)
+	if sess == nil {
+		return "", nil
+	}
+	return sess.User, sess
 }
 
 // Search finds tools matching query.
 // args: {"query": "...", "limit": N}
-// Response: {"hits": [...], "warnings": [...]}
+// Response: {"hits": [...], "total": N, "has_more": bool, "warnings": [...]}
 func (h *Handlers) Search(ctx context.Context, args map[string]any) (string, error) {
+	user, sess := sessionUser(ctx)
+
 	query, _ := args["query"].(string)
 	limit := h.cfg.Get().Proxy.MaxSearchResults
 	if l, ok := args["limit"].(float64); ok && int(l) > 0 {
@@ -47,6 +62,9 @@ func (h *Handlers) Search(ctx context.Context, args map[string]any) (string, err
 	}
 
 	for _, srv := range h.cfg.Get().EnabledServers() {
+		if sess != nil && !sess.CanSeeServer(srv.Name) {
+			continue
+		}
 		if h.cat.ServerStale(srv.Name) {
 			if err := h.cat.RefreshServer(ctx, srv.Name); err != nil {
 				h.log.Warn("search: refresh failed", "server", srv.Name, "err", err)
@@ -54,7 +72,21 @@ func (h *Handlers) Search(ctx context.Context, args map[string]any) (string, err
 		}
 	}
 
-	result := h.cat.Search(query, limit)
+	visible := func(e catalog.ToolEntry) bool {
+		if sess == nil {
+			return true
+		}
+		if e.Server != "" && !sess.CanSeeServer(e.Server) {
+			return false
+		}
+		if e.Tool == "" {
+			// Server-only probe from Catalog's warning path.
+			return sess.CanSeeServer(e.Server)
+		}
+		return h.policy.Visible(user, e.Server, e.Tool)
+	}
+
+	result := h.cat.Search(query, limit, visible)
 
 	type hitOut struct {
 		Ref       string   `json:"tool_ref"`
@@ -103,24 +135,21 @@ type callResult struct {
 }
 
 // Call routes a tool call to the correct backend with optional pagination.
-//
-// First call:
-//
-//	args: {"tool_ref": "server/tool", "arguments": {...}, "page_size": N}
-//	  OR  {"server": "name", "tool": "name", "arguments": {...}, "page_size": N}
-//
-// Subsequent pages:
-//
-//	args: {"cursor": "<token>"}
 func (h *Handlers) Call(ctx context.Context, args map[string]any) (string, error) {
-	// --- Cursor continuation path ---
 	if cursor, ok := args["cursor"].(string); ok && cursor != "" {
 		return h.callCursorNext(cursor)
 	}
 
-	// --- First call path ---
 	server, tool, err := h.resolveTarget(args)
 	if err != nil {
+		return "", err
+	}
+
+	user, sess := sessionUser(ctx)
+	if sess != nil && !sess.CanSeeServer(server) {
+		return "", fmt.Errorf("call: server %q is not permitted for user %q", server, user)
+	}
+	if err := h.policy.Check(user, server, tool); err != nil {
 		return "", err
 	}
 
@@ -139,14 +168,12 @@ func (h *Handlers) Call(ctx context.Context, args map[string]any) (string, error
 	}
 
 	pageSize := h.cfg.Get().Proxy.DefaultPageSize
-
 	if ps, ok := args["page_size"].(float64); ok && int(ps) > 0 {
 		pageSize = int(ps)
 	}
 
-	h.log.Info("call", "server", server, "tool", tool, "page_size", pageSize)
+	h.log.Info("call", "server", server, "tool", tool, "page_size", pageSize, "user", user)
 
-	// Lazy refresh catalog if needed.
 	ref := server + "/" + tool
 	if _, ok := h.cat.Describe(ref); !ok {
 		if err := h.cat.RefreshServer(ctx, server); err != nil {
@@ -182,24 +209,13 @@ func (h *Handlers) callCursorNext(cursor string) (string, error) {
 }
 
 // buildResponse applies the max_result_bytes safety net and pagination.
-//
-// Pagination sources, in priority order:
-//  1. User passed page_size explicitly (clamped down to max_result_bytes).
-//  2. No page size requested, but the result exceeds max_result_bytes.
-//     In this case we paginate at max_result_bytes and set a hint so the
-//     caller knows why a bare call suddenly returned a cursor.
-//
-// Truncation never happens: the entire result is always reachable via
-// next_cursor, so nothing is silently lost.
 func (h *Handlers) buildResponse(raw string, pageSize int) (string, error) {
 	maxBytes := h.cfg.Get().Proxy.MaxResultBytes
 	autoPaged := false
 
-	// Clamp user-requested page size down to the hard cap.
 	if maxBytes > 0 && pageSize > maxBytes {
 		pageSize = maxBytes
 	}
-	// Safety net: no pagination requested, but the result is too big.
 	if maxBytes > 0 && pageSize <= 0 && len(raw) > maxBytes {
 		pageSize = maxBytes
 		autoPaged = true
@@ -247,7 +263,6 @@ func extractArguments(args map[string]any) map[string]any {
 }
 
 // DescribeTool returns full schema for a tool ref.
-// args: {"tool_ref": "server/tool"}
 func (h *Handlers) DescribeTool(ctx context.Context, args map[string]any) (string, error) {
 	ref, _ := args["tool_ref"].(string)
 	if ref == "" {
@@ -258,6 +273,15 @@ func (h *Handlers) DescribeTool(ctx context.Context, args map[string]any) (strin
 	if err != nil {
 		return "", err
 	}
+
+	user, sess := sessionUser(ctx)
+	if sess != nil && !sess.CanSeeServer(server) {
+		return "", fmt.Errorf("describe_tool: server %q is not permitted for user %q", server, user)
+	}
+	if err := h.policy.Check(user, server, tool); err != nil {
+		return "", err
+	}
+
 	if _, ok := h.cat.Describe(ref); !ok {
 		if err := h.cat.RefreshServer(ctx, server); err != nil {
 			return "", fmt.Errorf("describe_tool: refresh %q: %w", server, err)
@@ -287,16 +311,23 @@ func (h *Handlers) DescribeTool(ctx context.Context, args map[string]any) (strin
 
 // ListServers returns configured backends and their runtime status.
 // args: {"include_disabled": bool}
-//
-// By default only enabled servers are listed. Pass include_disabled:true
-// to see the full registry (disabled entries have circuit:"disabled" and
-// running:false).
-func (h *Handlers) ListServers(_ context.Context, args map[string]any) (string, error) {
+func (h *Handlers) ListServers(ctx context.Context, args map[string]any) (string, error) {
 	includeDisabled, _ := args["include_disabled"].(bool)
 
 	servers := h.cfg.Get().EnabledServers()
 	if includeDisabled {
 		servers = h.cfg.Get().Servers
+	}
+
+	_, sess := sessionUser(ctx)
+	if sess != nil && sess.Role != "admin" {
+		kept := servers[:0]
+		for _, s := range servers {
+			if sess.CanSeeServer(s.Name) {
+				kept = append(kept, s)
+			}
+		}
+		servers = kept
 	}
 
 	type srvOut struct {
@@ -324,12 +355,17 @@ func (h *Handlers) ListServers(_ context.Context, args map[string]any) (string, 
 			out = append(out, item)
 			continue
 		}
-		st := h.brok.Status(s.Name)
-		item.Running = st.Running
-		item.Circuit = st.Circuit
-		item.LastError = st.LastError
-		if !st.LastToolCall.IsZero() {
-			item.LastToolCall = st.LastToolCall.UTC().Format(time.RFC3339)
+		if h.brok != nil {
+			st := h.brok.Status(s.Name)
+			item.Running = st.Running
+			item.Circuit = st.Circuit
+			item.LastError = st.LastError
+			if !st.LastToolCall.IsZero() {
+				item.LastToolCall = st.LastToolCall.UTC().Format(time.RFC3339)
+			}
+		} else {
+			// Test mode: no broker wired.
+			item.Circuit = "closed"
 		}
 		out = append(out, item)
 	}
@@ -341,21 +377,12 @@ func (h *Handlers) ListServers(_ context.Context, args map[string]any) (string, 
 }
 
 // splitRef parses "server/tool" into its two parts.
-//
-// Rules:
-//   - exactly one separator (the first '/'); the tool part may itself
-//     contain '/' so that tool names like "a/b" remain addressable
-//     via "server/a/b".
-//   - both parts must be non-empty and free of control characters.
-//   - neither part may exceed 256 bytes (server and tool identifiers
-//     are never longer in practice; a longer input is a typo or abuse).
 func splitRef(ref string) (server, tool string, err error) {
 	i := strings.IndexByte(ref, '/')
 	if i < 0 {
 		return "", "", fmt.Errorf("invalid tool_ref %q: expected server/tool", ref)
 	}
 	server, tool = ref[:i], ref[i+1:]
-
 	if err := validateRefPart("server", server); err != nil {
 		return "", "", fmt.Errorf("invalid tool_ref %q: %w", ref, err)
 	}
@@ -385,8 +412,7 @@ func validateRefPart(kind, part string) error {
 	return nil
 }
 
-// truncateBytes caps s to at most max bytes without splitting a UTF-8 rune.
-// max <= 0 means no limit.
+// truncateBytes caps s to at most limit bytes without splitting a UTF-8 rune.
 func truncateBytes(s string, limit int) string {
 	if limit <= 0 || len(s) <= limit {
 		return s
@@ -398,10 +424,8 @@ func truncateBytes(s string, limit int) string {
 	return s[:cut] + "\n… [truncated]"
 }
 
-// wrapResult returns raw as json.RawMessage when it looks like a JSON
-// object or array, and as a plain string otherwise. This lets models
-// consume structured tool output directly instead of unescaping a
-// stringified JSON blob.
+// wrapResult returns raw as json.RawMessage when it looks like valid
+// JSON, otherwise as a plain string.
 func wrapResult(raw string) any {
 	trimmed := strings.TrimSpace(raw)
 	if len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') {

@@ -13,20 +13,20 @@ import (
 	"github.com/subconscious-labs/lazy-mcp/internal/config"
 	"github.com/subconscious-labs/lazy-mcp/internal/logx"
 	"github.com/subconscious-labs/lazy-mcp/internal/observability"
+	"github.com/subconscious-labs/lazy-mcp/internal/policy"
 )
 
 // ToolEntry is a compact catalog entry for one tool.
 type ToolEntry struct {
-	Ref         string // "server/toolname"
+	Ref         string
 	Server      string
 	Tool        string
 	Summary     string
 	Tags        []string
-	InputHint   string // compact one-liner from inputSchema
-	InputSchema []byte // full schema for describe_tool
+	InputHint   string
+	InputSchema []byte
 	Dangerous   bool
 
-	// Precomputed lowercase views for fast scoring.
 	toolLower    string
 	refLower     string
 	serverLower  string
@@ -63,13 +63,14 @@ type SearchWarning struct {
 type SearchResult struct {
 	Hits     []SearchHit
 	Warnings []SearchWarning
-	Total    int // total matches before limit was applied
+	Total    int
 }
 
 // Catalog holds all indexed tools.
 type Catalog struct {
 	cfg         *config.Holder
 	brok        *broker.Broker
+	policy      *policy.Policy
 	log         *logx.Logger
 	mu          sync.RWMutex
 	entries     []ToolEntry
@@ -77,10 +78,11 @@ type Catalog struct {
 }
 
 // New creates a Catalog.
-func New(cfg *config.Holder, brok *broker.Broker, log *logx.Logger) *Catalog {
+func New(cfg *config.Holder, brok *broker.Broker, pol *policy.Policy, log *logx.Logger) *Catalog {
 	return &Catalog{
 		cfg:         cfg,
 		brok:        brok,
+		policy:      pol,
 		log:         log,
 		lastRefresh: make(map[string]time.Time),
 	}
@@ -99,6 +101,10 @@ func (c *Catalog) WarmUp(ctx context.Context) error {
 }
 
 // RefreshServer fetches tools/list from a backend and updates the index.
+//
+// The index is filtered by policy with user="admin": per-user views are
+// computed at read time in Search, so we keep one index that is as
+// complete as the global rules allow.
 func (c *Catalog) RefreshServer(ctx context.Context, serverName string) error {
 	srvcfg, ok := c.cfg.Get().Server(serverName)
 	if !ok {
@@ -116,7 +122,12 @@ func (c *Catalog) RefreshServer(ctx context.Context, serverName string) error {
 	}
 
 	var entries []ToolEntry
+	skipped := 0
 	for _, t := range tools {
+		if !c.policy.Visible("", serverName, t.Name) {
+			skipped++
+			continue
+		}
 		entry := ToolEntry{
 			Ref:         serverName + "/" + t.Name,
 			Server:      serverName,
@@ -132,7 +143,6 @@ func (c *Catalog) RefreshServer(ctx context.Context, serverName string) error {
 	}
 
 	c.mu.Lock()
-	// remove old entries for this server
 	var kept []ToolEntry
 	for _, e := range c.entries {
 		if e.Server != serverName {
@@ -145,13 +155,15 @@ func (c *Catalog) RefreshServer(ctx context.Context, serverName string) error {
 
 	observability.SetCatalogSize(serverName, len(entries))
 
-	c.log.Info("catalog refreshed", "server", serverName, "tools", len(entries))
+	c.log.Info("catalog refreshed",
+		"server", serverName,
+		"tools", len(entries),
+		"skipped", skipped)
 	return nil
 }
 
 // ServerStale reports whether the cached tool list for serverName is older
-// than proxy.tool_cache_ttl. Servers that were never refreshed count as stale.
-// ttl <= 0 disables staleness entirely (cache never expires).
+// than proxy.tool_cache_ttl.
 func (c *Catalog) ServerStale(serverName string) bool {
 	ttl := c.cfg.Get().Proxy.ToolCacheTTL
 	if ttl <= 0 {
@@ -166,6 +178,26 @@ func (c *Catalog) ServerStale(serverName string) bool {
 	return time.Since(t) > ttl
 }
 
+// InvalidateServer drops the refresh timestamp for serverName so the
+// next Search or DescribeTool re-fetches tools/list.
+func (c *Catalog) InvalidateServer(serverName string) {
+	c.mu.Lock()
+	_, had := c.lastRefresh[serverName]
+	delete(c.lastRefresh, serverName)
+	c.mu.Unlock()
+	if had {
+		c.log.Info("catalog invalidated", "server", serverName)
+	}
+}
+
+// Invalidate clears all refresh timestamps so the next Search reloads
+// every server. Called on SIGHUP when policy rules may have changed.
+func (c *Catalog) Invalidate() {
+	c.mu.Lock()
+	c.lastRefresh = make(map[string]time.Time)
+	c.mu.Unlock()
+}
+
 type matchKind int
 
 const (
@@ -174,29 +206,35 @@ const (
 	matchServer
 )
 
-// Search returns scored hits for query plus warnings for terms that matched
-// only server metadata (e.g. a broken server's description or tags).
-//
-// Semantics: a word that matches nothing anywhere (neither catalog nor server
-// metadata) disqualifies the whole query. A word that matches only server
-// metadata contributes no score but does not disqualify; instead it yields
-// a warning about that server.
-func (c *Catalog) Search(query string, limit int) SearchResult {
+// Search returns scored hits for query plus warnings. If filter is
+// non-nil, only entries for which filter(e) is true are considered;
+// warnings and totals reflect the filtered view.
+func (c *Catalog) Search(query string, limit int, filter func(ToolEntry) bool) SearchResult {
 	q := strings.ToLower(strings.TrimSpace(query))
 	if q == "" {
-		return c.allHits(limit)
+		return c.allHits(limit, filter)
 	}
 	words := strings.Fields(q)
 	if len(words) == 0 {
-		return c.allHits(limit)
+		return c.allHits(limit, filter)
 	}
 
 	c.mu.RLock()
 	entries := c.entries
 	c.mu.RUnlock()
 
+	if filter != nil {
+		kept := make([]ToolEntry, 0, len(entries))
+		for _, e := range entries {
+			if filter(e) {
+				kept = append(kept, e)
+			}
+		}
+		entries = kept
+	}
+
 	matches := make([]matchKind, len(words))
-	serverTerms := map[string][]string{} // server name -> terms matched
+	serverTerms := map[string][]string{}
 
 	for i, w := range words {
 		for _, e := range entries {
@@ -209,6 +247,10 @@ func (c *Catalog) Search(query string, limit int) SearchResult {
 			continue
 		}
 		for _, srv := range c.cfg.Get().EnabledServers() {
+			if filter != nil && !filter(ToolEntry{Server: srv.Name}) {
+				// Hidden server: don't emit warnings either.
+				continue
+			}
 			if wordMatchesServerMeta(w, srv.Name, srv.Description, srv.Tags) {
 				matches[i] = matchServer
 				serverTerms[srv.Name] = append(serverTerms[srv.Name], w)
@@ -217,7 +259,6 @@ func (c *Catalog) Search(query string, limit int) SearchResult {
 		}
 	}
 
-	// Any word matched nowhere → empty result.
 	for _, m := range matches {
 		if m == matchNone {
 			return SearchResult{}
@@ -234,7 +275,6 @@ func (c *Catalog) Search(query string, limit int) SearchResult {
 			hits = append(hits, SearchHit{Entry: e, Score: s})
 		}
 	}
-	// insertion sort for small N
 	for i := 1; i < len(hits); i++ {
 		for j := i; j > 0 && hits[j].Score > hits[j-1].Score; j-- {
 			hits[j], hits[j-1] = hits[j-1], hits[j]
@@ -259,12 +299,15 @@ func (c *Catalog) Search(query string, limit int) SearchResult {
 }
 
 // allHits returns all entries with uniform score, for the empty-query case.
-func (c *Catalog) allHits(limit int) SearchResult {
+func (c *Catalog) allHits(limit int, filter func(ToolEntry) bool) SearchResult {
 	c.mu.RLock()
 	entries := c.entries
 	c.mu.RUnlock()
 	hits := make([]SearchHit, 0, len(entries))
 	for _, e := range entries {
+		if filter != nil && !filter(e) {
+			continue
+		}
 		hits = append(hits, SearchHit{Entry: e, Score: 1})
 	}
 	total := len(hits)
@@ -355,18 +398,5 @@ func (c *Catalog) ApplyConfig(cfg *config.Config) {
 	}
 	if removed > 0 {
 		c.log.Info("reload: dropped catalog entries", "count", removed)
-	}
-}
-
-// InvalidateServer drops the refresh timestamp for serverName so the
-// next Search or DescribeTool re-fetches tools/list. Called when a
-// downstream backend signals notifications/tools/list_changed.
-func (c *Catalog) InvalidateServer(serverName string) {
-	c.mu.Lock()
-	_, had := c.lastRefresh[serverName]
-	delete(c.lastRefresh, serverName)
-	c.mu.Unlock()
-	if had {
-		c.log.Info("catalog invalidated", "server", serverName)
 	}
 }

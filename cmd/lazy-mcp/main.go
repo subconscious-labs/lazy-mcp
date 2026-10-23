@@ -22,6 +22,7 @@ import (
 	"github.com/subconscious-labs/lazy-mcp/internal/logx"
 	"github.com/subconscious-labs/lazy-mcp/internal/mcp"
 	"github.com/subconscious-labs/lazy-mcp/internal/observability"
+	"github.com/subconscious-labs/lazy-mcp/internal/policy"
 )
 
 func main() {
@@ -78,9 +79,10 @@ func main() {
 
 	holder := config.NewHolder(cfg)
 
-	brok := broker.New(holder, log)
-	cat := catalog.New(holder, brok, log)
-	srv := mcp.NewServer(holder, brok, cat, log)
+	pol := policy.New(holder)
+	brok := broker.New(holder, pol, log)
+	cat := catalog.New(holder, brok, pol, log)
+	srv := mcp.NewServer(holder, brok, cat, pol, log)
 
 	var hubSrv *hub.Hub
 	if cfg.Proxy.HTTP.Addr != "" {

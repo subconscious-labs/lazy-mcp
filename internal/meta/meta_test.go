@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/subconscious-labs/lazy-mcp/internal/config"
+	"github.com/subconscious-labs/lazy-mcp/internal/policy"
 )
 
 func TestWrapResult(t *testing.T) {
@@ -53,15 +54,16 @@ func TestWrapResult(t *testing.T) {
 }
 
 func newTestHandlers() *Handlers {
-	cfg := &config.Config{
+	holder := config.NewHolder(&config.Config{
 		Proxy: config.ProxyConfig{
 			MaxResultBytes: 4096,
 			CursorTTL:      time.Minute,
 		},
-	}
+	})
 	return &Handlers{
-		cfg:   config.NewHolder(cfg),
-		pager: NewPageStore(time.Minute),
+		cfg:    holder,
+		policy: policy.New(holder),
+		pager:  NewPageStore(time.Minute),
 	}
 }
 
@@ -384,10 +386,15 @@ func TestSplitRef_AcceptsValid(t *testing.T) {
 }
 
 func TestCall_RejectsOversizedArguments(t *testing.T) {
+	holder := config.NewHolder(&config.Config{
+		Proxy: config.ProxyConfig{MaxArgumentsBytes: 128},
+		Servers: []config.ServerConfig{
+			{Name: "server", Enabled: true},
+		},
+	})
 	h := &Handlers{
-		cfg: config.NewHolder(&config.Config{
-			Proxy: config.ProxyConfig{MaxArgumentsBytes: 128},
-		}),
+		cfg:    holder,
+		policy: policy.New(holder),
 	}
 	big := strings.Repeat("x", 200)
 	_, err := h.Call(context.Background(), map[string]any{

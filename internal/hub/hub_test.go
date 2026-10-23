@@ -15,6 +15,7 @@ import (
 	"github.com/subconscious-labs/lazy-mcp/internal/config"
 	"github.com/subconscious-labs/lazy-mcp/internal/logx"
 	"github.com/subconscious-labs/lazy-mcp/internal/mcp"
+	"github.com/subconscious-labs/lazy-mcp/internal/policy"
 )
 
 func tokenHash(s string) string {
@@ -25,7 +26,8 @@ func tokenHash(s string) string {
 func newTestHub(t *testing.T, cfg *config.Config) (*Hub, *httptest.Server) {
 	t.Helper()
 	holder := config.NewHolder(cfg)
-	srv := mcp.NewServer(holder, nil, nil, logx.New(io.Discard))
+	pol := policy.New(holder)
+	srv := mcp.NewServer(holder, nil, nil, pol, logx.New(io.Discard))
 	h := New(holder, srv, logx.New(io.Discard))
 	ts := httptest.NewServer(h.authMiddleware(http.HandlerFunc(h.handleMCP)))
 	t.Cleanup(ts.Close)

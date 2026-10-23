@@ -8,9 +8,9 @@ import (
 
 	"github.com/subconscious-labs/lazy-mcp/internal/config"
 	"github.com/subconscious-labs/lazy-mcp/internal/logx"
+	"github.com/subconscious-labs/lazy-mcp/internal/policy"
 )
 
-// benchEntry is a realistic ToolEntry used by all benchmarks.
 func benchEntry(i int) ToolEntry {
 	return ToolEntry{
 		Ref:         fmt.Sprintf("server%d/tool_%d", i%5, i),
@@ -30,7 +30,8 @@ func benchCatalog(n int) *Catalog {
 			ToolCacheTTL: 30 * time.Minute,
 		},
 	}
-	c := New(config.NewHolder(cfg), nil, logx.New(io.Discard))
+	holder := config.NewHolder(cfg)
+	c := New(holder, nil, policy.New(holder), logx.New(io.Discard))
 	c.entries = make([]ToolEntry, n)
 	for i := 0; i < n; i++ {
 		c.entries[i] = benchEntry(i)
@@ -42,7 +43,7 @@ func BenchmarkSearch_SingleWord(b *testing.B) {
 	c := benchCatalog(500)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = c.Search("tool_42", 8)
+		_ = c.Search("tool_42", 8, nil)
 	}
 }
 
@@ -50,7 +51,7 @@ func BenchmarkSearch_MultiWord(b *testing.B) {
 	c := benchCatalog(500)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = c.Search("execute command remote", 8)
+		_ = c.Search("execute command remote", 8, nil)
 	}
 }
 
@@ -58,7 +59,7 @@ func BenchmarkSearch_NoMatch(b *testing.B) {
 	c := benchCatalog(500)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = c.Search("zzznotexist", 8)
+		_ = c.Search("zzznotexist", 8, nil)
 	}
 }
 
@@ -66,7 +67,7 @@ func BenchmarkSearch_Empty(b *testing.B) {
 	c := benchCatalog(500)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = c.Search("", 8)
+		_ = c.Search("", 8, nil)
 	}
 }
 

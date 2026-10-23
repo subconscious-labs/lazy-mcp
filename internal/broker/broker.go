@@ -14,6 +14,8 @@ import (
 	"github.com/subconscious-labs/lazy-mcp/internal/config"
 	"github.com/subconscious-labs/lazy-mcp/internal/logx"
 	"github.com/subconscious-labs/lazy-mcp/internal/observability"
+	"github.com/subconscious-labs/lazy-mcp/internal/policy"
+	"github.com/subconscious-labs/lazy-mcp/internal/session"
 )
 
 // ToolInfo is a normalized tool descriptor from a backend.
@@ -32,8 +34,9 @@ type Backend interface {
 
 // Broker manages backends keyed by server name.
 type Broker struct {
-	cfg *config.Holder
-	log *logx.Logger
+	cfg    *config.Holder
+	policy *policy.Policy
+	log    *logx.Logger
 
 	mu   sync.Mutex
 	pool map[string]*backendProcess
@@ -46,9 +49,10 @@ type Broker struct {
 }
 
 // New creates a Broker.
-func New(cfg *config.Holder, log *logx.Logger) *Broker {
+func New(cfg *config.Holder, pol *policy.Policy, log *logx.Logger) *Broker {
 	return &Broker{
 		cfg:      cfg,
+		policy:   pol,
 		log:      log,
 		pool:     make(map[string]*backendProcess),
 		circuits: make(map[string]*circuit),
@@ -97,6 +101,15 @@ func (b *Broker) CallTool(ctx context.Context, serverName, tool string, args map
 
 func (b *Broker) doCallTool(ctx context.Context, serverName, tool string, args map[string]any) (string, error) {
 	origCtx := ctx
+
+	sess, _ := session.FromContext(ctx)
+	user := ""
+	if sess != nil {
+		user = sess.User
+	}
+	if err := b.policy.Check(user, serverName, tool); err != nil {
+		return "", err
+	}
 
 	if err := b.gate(serverName); err != nil {
 		return "", err
