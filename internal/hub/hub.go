@@ -337,7 +337,10 @@ func (h *Hub) originOK(r *http.Request) bool {
 
 // OnDownstreamNotification is the callback installed on the broker. It
 // maps MCP notifications from downstream servers into client-facing
-// notifications/message events.
+// notifications/message events with logger="event" and
+// data={source, payload}. Downstreams differ in what they put in
+// params.data (object, string, nested), so the payload is forwarded
+// verbatim; the client is expected to normalise.
 func (h *Hub) OnDownstreamNotification(server, method string, params json.RawMessage) {
 	switch method {
 	case "notifications/message":
@@ -352,22 +355,36 @@ func (h *Hub) OnDownstreamNotification(server, method string, params json.RawMes
 		if p.Level == "" {
 			p.Level = "info"
 		}
-		h.broadcastNotification(p.Level, "downstream:"+server, p.Data)
+		var payload any
+		if len(p.Data) > 0 {
+			payload = p.Data
+		}
+		h.broadcastNotification(p.Level, "event", map[string]any{
+			"source":  server,
+			"payload": payload,
+		})
+
 	case "notifications/tools/list_changed":
-		data, _ := json.Marshal(map[string]any{"event": "catalog_changed", "server": server})
-		h.broadcastNotification("info", "downstream:"+server, data)
+		h.broadcastNotification("info", "event", map[string]any{
+			"source":  server,
+			"payload": map[string]any{"event": "catalog_changed"},
+		})
+
 	case "notifications/resources/updated":
-		data, _ := json.Marshal(map[string]any{"event": "resource_updated", "server": server})
-		h.broadcastNotification("info", "downstream:"+server, data)
+		h.broadcastNotification("info", "event", map[string]any{
+			"source":  server,
+			"payload": map[string]any{"event": "resource_updated"},
+		})
+
 	default:
 		h.log.Debug("hub: unknown downstream notification", "server", server, "method", method)
 	}
 }
 
-func (h *Hub) broadcastNotification(level, logger string, data json.RawMessage) {
-	if len(data) == 0 {
-		data = json.RawMessage(`null`)
-	}
+// broadcastNotification sends a notifications/message event to all SSE
+// subscribers. `data` may be any JSON-marshalable value (object, string,
+// json.RawMessage); nil becomes JSON null.
+func (h *Hub) broadcastNotification(level, logger string, data any) {
 	msg, err := json.Marshal(map[string]any{
 		"jsonrpc": "2.0",
 		"method":  "notifications/message",
@@ -378,8 +395,10 @@ func (h *Hub) broadcastNotification(level, logger string, data json.RawMessage) 
 		},
 	})
 	if err != nil {
+		h.log.Warn("hub: marshal notification", "err", err)
 		return
 	}
+	h.log.Info("hub: notification", "logger", logger, "bytes", len(msg))
 	h.broadcast(msg)
 }
 
@@ -391,9 +410,11 @@ func (h *Hub) broadcast(msg []byte) {
 	}
 	h.mu.RUnlock()
 
-	if len(states) > 0 {
-		observability.Default().IncNotificationsSent()
+	if len(states) == 0 {
+		h.log.Debug("hub: notification has no SSE subscribers")
+		return
 	}
+	observability.Default().IncNotificationsSent()
 
 	for _, st := range states {
 		select {

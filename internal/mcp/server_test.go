@@ -120,11 +120,18 @@ func TestRun_Initialize(t *testing.T) {
 	if !ok {
 		t.Fatalf("result: %T", rec["result"])
 	}
-	if result["protocolVersion"] != "2024-11-05" {
+	if result["protocolVersion"] != "2025-11-25" {
 		t.Fatalf("protocolVersion: %v", result["protocolVersion"])
 	}
-	if _, ok := result["capabilities"]; !ok {
+	caps, ok := result["capabilities"].(map[string]any)
+	if !ok {
 		t.Fatalf("capabilities missing")
+	}
+	if _, ok := caps["tools"]; !ok {
+		t.Fatalf("capabilities.tools missing")
+	}
+	if _, ok := caps["logging"]; !ok {
+		t.Fatalf("capabilities.logging missing — clients may drop notifications/message")
 	}
 	if _, ok := result["serverInfo"]; !ok {
 		t.Fatalf("serverInfo missing")

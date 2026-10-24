@@ -226,8 +226,18 @@ func TestBroadcast_DeliveredToAllSessions(t *testing.T) {
 			t.Fatalf("session %d: method=%v", i+1, msg["method"])
 		}
 		params := msg["params"].(map[string]any)
-		if params["logger"] != "downstream:mock" {
+		if params["logger"] != "event" {
 			t.Fatalf("session %d: logger=%v", i+1, params["logger"])
+		}
+		data, ok := params["data"].(map[string]any)
+		if !ok {
+			t.Fatalf("session %d: data is not an object: %T", i+1, params["data"])
+		}
+		if data["source"] != "mock" {
+			t.Fatalf("session %d: source=%v", i+1, data["source"])
+		}
+		if data["payload"] != "ping" {
+			t.Fatalf("session %d: payload=%v", i+1, data["payload"])
 		}
 	}
 }

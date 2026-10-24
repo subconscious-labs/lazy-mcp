@@ -136,20 +136,20 @@ func (s *Server) handle(ctx context.Context, id any, method string, params json.
 	switch method {
 	case "initialize":
 		return s.respond(id, map[string]any{
-			"protocolVersion": "2024-11-05",
-			"capabilities":    map[string]any{"tools": map[string]any{}},
+			"protocolVersion": "2025-11-25",
+			"capabilities": map[string]any{
+				"tools":   map[string]any{},
+				"logging": map[string]any{},
+			},
 			"serverInfo": map[string]any{
 				"name":    "lazy-mcp",
 				"version": observability.Version,
 			},
 		})
-
 	case "notifications/initialized", "notifications/cancelled":
 		return nil // no response for notifications
-
 	case "tools/list":
 		return s.respond(id, map[string]any{"tools": s.toolManifest(prefix)})
-
 	case "tools/call":
 		var p struct {
 			Name      string         `json:"name"`
@@ -169,7 +169,6 @@ func (s *Server) handle(ctx context.Context, id any, method string, params json.
 		return s.respond(id, map[string]any{
 			"content": []map[string]any{{"type": "text", "text": result}},
 		})
-
 	default:
 		return s.errResp(id, -32601, "method not found: "+method)
 	}
