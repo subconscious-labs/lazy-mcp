@@ -394,6 +394,12 @@ func (h *httpBackend) readSSE(ctx context.Context) {
 	}
 	defer res.Body.Close()
 
+	if res.StatusCode == http.StatusNotFound || res.StatusCode == http.StatusMethodNotAllowed {
+		// Backend doesn't support server-to-client notifications via SSE.
+		// This is valid per MCP spec (e.g., mempalace uses POST-only).
+		h.log.Info("sse not supported by backend", "server", h.cfg.Name)
+		return
+	}
 	if res.StatusCode != 200 {
 		h.log.Warn("sse unexpected status", "server", h.cfg.Name, "code", res.StatusCode)
 		return
