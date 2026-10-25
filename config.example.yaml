@@ -2,140 +2,80 @@ version: 1
 
 # Includes
 # --------
-# Splitting the config across files:
-#
-#   include:
-#     - "conf.d/*.yaml"
-#
-# - Paths are relative to this file's directory; globs are supported.
-# - `proxy` and `auth` may appear only in this top-level file
-#   (a `proxy:` or `auth:` block in an included file is a load error).
-# - `servers` merge by name; the last definition wins, with a warning.
-# - Nested `include:` is not allowed (no cycles by construction).
-# - ${...} expansion works inside included files.
+# include:
+#   - "conf.d/*.yaml"
+# - Paths relative to this file; globs supported.
+# - proxy and auth may appear ONLY in this top-level file.
+# - servers merge by name; last definition wins.
+# - Nested include is not allowed.
 
 # Substitutions
 # -------------
-# Any string value in this file may reference the environment or a file:
-#
-#   ${NAME}              required env var (error if unset or empty)
-#   ${NAME:-default}     default if unset or empty
-#   ${NAME:?message}     required, custom error message
-#   ${file:/path}        file contents (trailing newlines stripped)
-#   $$                   literal '$'
-#
-# Example (secrets stay out of the file):
-#
-#   servers:
-#     - name: dav
-#       env:
-#         DAV_PASSWORD: "${file:/run/secrets/dav_pass}"
-#         DAV_USERNAME: "${DAV_USERNAME:?set DAV_USERNAME}"
-#
-# Expanded after YAML parsing; values that look like bools or numbers
-# after expansion are re-tagged so `enabled: ${SVC_ENABLED}` works.
+# ${NAME}, ${NAME:-default}, ${NAME:?msg}, ${file:/path}, $$ for literal $.
+# Works inside included files.
 
-# Authentication (HTTP transport only; stdio ignores this).
-# Tokens are stored as SHA-256 hashes. Generate with:
-#   printf %s "$TOKEN" | sha256sum | awk '{print $1}'
 auth:
   enabled: false
   users: []
   # users:
   #   - name: elsa
-  #     token_sha256: "<64 hex chars>"
+  #     token_sha256: "<64 hex chars>"  # printf %s "$TOKEN" | sha256sum
   #     role: agent
-  #     allowed_servers: [git, tasks, ssh]
-  #   - name: admin
-  #     token_sha256: "<64 hex chars>"
-  #     role: admin
+  #     allowed_servers: [git, tasks]
 
 proxy:
-  # Which frontend(s) to run:
-  #   stdio — subprocess of an MCP client (chatd, IDE, etc).
-  #   http  — standalone daemon on proxy.http.addr.
-  #   both  — both; exits when the stdio client disconnects.
+  # Which frontend(s) to run: "stdio", "http", "both".
   # Empty auto-picks: http if http.addr is set, stdio otherwise.
   transport: "stdio"
-  # HTTP MCP transport. Empty addr keeps stdio only.
   http:
     addr: ""                      # e.g. ":3333"
     session_ttl: 30m
     allowed_origins:
       - "http://localhost:*"
       - "http://127.0.0.1:*"
-  # Prefix for meta-tool names exposed to the model
+
   tool_prefix: "meta"
-  # Max results returned by search
   max_search_results: 8
-  # Warm up all servers at start instead of lazy init
   warmup: false
-  # Kill idle subprocess after this duration with no tools/call activity.
-  # Catalog refreshes (tools/list) do NOT count as activity.
-  # 0 = never. Default: 10m.
+  # Stop backends with no tools/call for this long. 0 = never.
   idle_ttl: 10m
-  # How long to cache tools/list from a backend
+  # How long to cache tools/list from a backend.
   tool_cache_ttl: 30m
-  # Timeout for a single tool call
+  # Per tools/call timeout.
   exec_timeout: 60s
-  # Timeout for MCP handshake when starting a backend. Slow backends
-  # (cold caches, remote probes on startup) may need more. Default: 10s.
+  # MCP handshake timeout when starting a backend.
   initialize_timeout: 10s
-  # Hard cap on tool result size, in bytes. When a result exceeds this, the
-  # proxy paginates at this boundary and returns the first page plus a
-  # next_cursor. Never truncates — nothing is silently lost.
-  # 0 = no cap (unlimited; use with caution). Default: 262144 (256 KiB).
+
+  # Hard cap on paginated result size.
   max_result_bytes: 262144
-  # Cap on the summary returned by meta_search, in bytes. Full
-  # descriptions are returned by meta_describe_tool. 0 disables the
-  # cap. Default: 200.
-  max_summary_len: 200
-  # Hard limit on a single downstream result before it is stored in
-  # the pagination cache, in bytes. Larger results are rejected
-  # rather than buffered in memory. 0 = unlimited. Default: 10 MiB.
-  max_raw_result_bytes: 10485760
-  # Hard cap on the size of meta_call's `arguments` payload, in bytes.
-  # Prevents a runaway model from shipping megabytes of base64 into a
-  # backend. -1 disables the check. Default: 262144 (256 KiB).
+  # Cap on serialized arguments payload.
   max_arguments_bytes: 262144
-  # Default page size for meta_call, in bytes. 0 = paginate only when the
-  # result exceeds max_result_bytes (safety-net mode). Default: 0.
+  # Cap on summary returned by meta_search (full desc in describe_tool).
+  max_summary_len: 200
+  # Reject a single raw result larger than this before buffering.
+  max_raw_result_bytes: 10485760
+
+  # Default page size for meta_call. 0 = auto-paginate only if > max_result_bytes.
   default_page_size: 0
-  # How long paged cursors are kept in memory between calls.
+  # How long paged cursors survive in memory.
   cursor_ttl: 5m
-  # Grace period for in-flight requests on SIGINT/SIGTERM.
+  # Grace period for in-flight requests on SIGTERM.
   shutdown_timeout: 5s
-  # Prometheus metrics, written to a .prom file for node_exporter's
-  # textfile collector. Empty path disables metric collection entirely.
-  # metrics_interval is how often the file is rewritten; must be one of
-  # 15s, 30s, 60s.
+
+  # Prometheus textfile metrics for node_exporter.
   metrics_file: ""
   metrics_interval: 15s
-  # Reject calls to tools whose downstream server marks
-  # annotations.destructiveHint: true. Works without a manual list.
-  deny_destructive: false
-  # Reject calls to tools listed in a server's dangerous_tools.
-  # The flag is metadata only by default; set to true to enforce.
+
+  # Safety gates
   deny_dangerous: false
-  # Per-(user, server, tool) token bucket. Opt-in; the typical
-  # single-agent setup does not need it.
-  rate_limit:
-    enabled: false
-    per_minute: 60
-    burst: 10
-  # Circuit breaker: isolate a backend after N consecutive transport-level
-  # failures. Tool-level errors (isError:true) do NOT count.
+  deny_destructive: false
+
   circuit_breaker:
-    # Default: true.
     enabled: true
-    # Consecutive failures before the circuit opens.
     failure_threshold: 5
-    # How long to stay open before probing with a single request.
     cooldown: 30s
-  # If set, the same JSONL stream that goes to stderr is also written to
-  # this file (rotated by lumberjack). Empty = stderr only.
+
   log_file: ""
-  # Rotation parameters, applied only when log_file is set.
   log_file_max_mb: 50
   log_file_max_backups: 7
   log_file_max_age_days: 30
@@ -152,56 +92,25 @@ servers:
       MEMPALACEPALACEPATH: /var/lib/mempalace
     autostart: false
     enabled: true
-    # Mark tools that need extra caution (will appear in describe_tool output)
     dangerous_tools: []
-
-  - name: dav
-    transport: stdio
-    command: /usr/local/bin/dav-mcp
-    args: []
-    description: "Calendars and contacts via CalDAV/CardDAV"
-    tags: ["calendar", "contacts", "dav"]
-    env:
-      DAV_URL: https://dav.example.com
-      DAV_USERNAME: user
-      DAV_PASSWORD: secret
-    autostart: false
-    enabled: true
-    # If non-empty, only these tools are visible and callable (even for admin).
     allowed_tools: []
-    # Always hidden and rejected. Takes precedence over allowed_tools.
     denied_tools: []
-
-  - name: notes
-    transport: stdio
-    command: /opt/mcp/venv/bin/python
-    args: ["/opt/mcp/mcp-notes.py"]
-    description: "Notes via Memos API: search and create"
-    tags: ["notes", "memos"]
-    autostart: false
-    enabled: true
 
   - name: mempalace-http
     transport: http
     url: "http://127.0.0.1:9999/mcp"
     headers:
-      Authorization: "Bearer ${MEMPALACE_TOKEN}"
-    description: "Long-term memory (HTTP backend)"
-    tags: ["memory", "search"]
-    enabled: true
+      Authorization: "Bearer ${MEMPALACE_TOKEN:?set in env}"
+    description: "Long-term memory over HTTP"
+    tags: ["memory", "http"]
+    autostart: false
+    enabled: false
+    allowed_tools: []
+    denied_tools: []
 
 # Reloading
 # ---------
-# Three ways to reload this file in place:
-#
-#   sudo systemctl reload lazy-mcp.service   # if run as a systemd unit
-#   pkill -HUP -f '/usr/local/bin/lazy-mcp'  # any process owner
-#   meta_reload (admin session)               # from a chat / HTTP client
-#
-# Applied live: proxy.* tunables, added/removed servers, command/args/env
-# changes (existing backends for changed servers are stopped and will
-# restart lazily).
-#
-# NOT applied live (require full restart): proxy.log_file,
-# proxy.metrics_file, proxy.metrics_interval, proxy.cursor_ttl.
-# Reload returns a warning when one of these changed.
+# systemctl reload lazy-mcp.service  OR  kill -HUP <pid>  OR  meta_reload
+# Applied live: proxy.* tunables, servers, command/args/env/url changes.
+# Requires restart: proxy.log_file, proxy.metrics_file, proxy.metrics_interval,
+# proxy.cursor_ttl.
