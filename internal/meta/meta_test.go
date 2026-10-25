@@ -263,7 +263,7 @@ func TestPageStore_MultiPage(t *testing.T) {
 
 	total := len(first)
 	for cur != "" {
-		page, next, more, _, _, _, ok := ps.Next(cur)
+		page, next, more, _, _, ok := ps.Next(cur, "")
 		if !ok {
 			t.Fatal("cursor rejected")
 		}
@@ -288,11 +288,11 @@ func TestPageStore_IdempotentCursor(t *testing.T) {
 	}
 
 	// Fetch page 2 twice — must yield the same bytes.
-	page1, next1, _, _, _, _, ok := ps.Next(cur)
+	page1, next1, _, _, _, ok := ps.Next(cur, "")
 	if !ok {
 		t.Fatal("first Next failed")
 	}
-	page2, next2, _, _, _, _, ok := ps.Next(cur)
+	page2, next2, _, _, _, ok := ps.Next(cur, "")
 	if !ok {
 		t.Fatal("second Next failed")
 	}
@@ -314,7 +314,7 @@ func TestPageStore_NextByArbitraryIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	page3, _, _, _, _, _, ok := ps.Next(cursorFor(id, 3))
+	page3, _, _, _, _, ok := ps.Next(cursorFor(id, 3), "")
 	if !ok {
 		t.Fatal("direct page 3 fetch failed")
 	}
@@ -333,7 +333,7 @@ func TestParseCursor_RejectsGarbage(t *testing.T) {
 
 func TestPageStore_UnknownCursor(t *testing.T) {
 	ps := NewPageStore(time.Minute)
-	_, _, _, _, _, _, ok := ps.Next("nope")
+	_, _, _, _, _, ok := ps.Next("nope", "")
 	if ok {
 		t.Fatal("unknown cursor should be rejected")
 	}

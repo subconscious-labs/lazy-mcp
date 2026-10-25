@@ -216,8 +216,8 @@ func (h *Handlers) Call(ctx context.Context, args map[string]any) (string, error
 
 // callCursorNext fetches the next page for an existing cursor.
 func (h *Handlers) callCursorNext(_ context.Context, cursor, user string, sess *session.Session) (string, error) {
-	page, nextCursor, hasMore, owner, server, tool, ok := h.pager.Next(cursor)
-	if !ok || owner != user {
+	page, nextCursor, hasMore, server, tool, ok := h.pager.Next(cursor, user)
+	if !ok {
 		// Do not leak existence of someone else's cursor.
 		return "", fmt.Errorf("call: cursor %q not found or expired", cursor)
 	}
@@ -230,7 +230,7 @@ func (h *Handlers) callCursorNext(_ context.Context, cursor, user string, sess *
 	}
 
 	out := callResult{
-		Result:     wrapResult(page),
+		Result:     page, // always a string fragment
 		NextCursor: nextCursor,
 		HasMore:    hasMore,
 	}
@@ -255,8 +255,19 @@ func (h *Handlers) buildResponse(raw string, pageSize int, user, server, tool st
 	}
 
 	firstPage, cursor, hasMore := h.pager.Store(raw, pageSize, user, server, tool)
+
+	// When the result fits in a single page (or pagination is
+	// disabled), parse it as JSON if possible. When it's a byte
+	// fragment of a larger document, keep it as a string so the
+	// caller never sees a chunk that happens to look like a
+	// standalone JSON value.
+	var resultValue any = firstPage
+	if !hasMore {
+		resultValue = wrapResult(firstPage)
+	}
+
 	out := callResult{
-		Result:     wrapResult(firstPage),
+		Result:     resultValue,
 		NextCursor: cursor,
 		HasMore:    hasMore,
 	}

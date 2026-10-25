@@ -334,27 +334,59 @@ func (p *backendProcess) CallTool(ctx context.Context, name string, args map[str
 	}
 
 	type contentItem struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type     string          `json:"type"`
+		Text     string          `json:"text,omitempty"`
+		MimeType string          `json:"mimeType,omitempty"`
+		Data     string          `json:"data,omitempty"`
+		Resource json.RawMessage `json:"resource,omitempty"`
 	}
 	type callResult struct {
-		Content []contentItem `json:"content"`
-		IsError bool          `json:"isError"`
+		Content           []contentItem   `json:"content"`
+		IsError           bool            `json:"isError"`
+		StructuredContent json.RawMessage `json:"structuredContent,omitempty"`
 	}
 	var cr callResult
 	if err := json.Unmarshal(res, &cr); err != nil {
 		return "", fmt.Errorf("parse tools/call result: %w", err)
 	}
-	parts := make([]string, 0, len(cr.Content))
+
+	if cr.IsError {
+		var parts []string
+		for _, c := range cr.Content {
+			if c.Type == "text" {
+				parts = append(parts, c.Text)
+			}
+		}
+		return "", fmt.Errorf("%w: %s", ErrToolError, strings.Join(parts, "\n"))
+	}
+
+	// If the server provided structured content, prefer it: it is
+	// machine-readable and preserves the full MCP result shape.
+	if len(cr.StructuredContent) > 0 && string(cr.StructuredContent) != "null" {
+		return string(cr.StructuredContent), nil
+	}
+
+	// Otherwise, join text blocks. Non-text blocks (image, audio,
+	// resource) are reported explicitly so the caller knows data is
+	// missing rather than receiving a silently truncated result.
+	var parts []string
+	var nonText []string
 	for _, c := range cr.Content {
-		if c.Type == "text" {
+		switch c.Type {
+		case "text":
 			parts = append(parts, c.Text)
+		case "image", "audio":
+			nonText = append(nonText, fmt.Sprintf("[%s content omitted: mimeType=%s]", c.Type, c.MimeType))
+		case "resource":
+			nonText = append(nonText, "[resource content omitted]")
+		default:
+			nonText = append(nonText, fmt.Sprintf("[%s content omitted]", c.Type))
 		}
 	}
-	result := strings.Join(parts, "\n")
-	if cr.IsError {
-		return "", fmt.Errorf("%w: %s", ErrToolError, result)
+	if len(nonText) > 0 {
+		parts = append(parts, nonText...)
 	}
+	result := strings.Join(parts, "\n")
 	return result, nil
 }
 

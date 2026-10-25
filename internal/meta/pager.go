@@ -53,6 +53,13 @@ func (ps *PageStore) Store(content string, pageSize int, user, server, tool stri
 		return content, "", false
 	}
 
+	// A page size smaller than 4 bytes cannot hold even a single
+	// multibyte rune. Bump it to 4 so that splitting always lands
+	// on a valid rune boundary.
+	if pageSize < 4 {
+		pageSize = 4
+	}
+
 	var pages []string
 	for len(content) > 0 {
 		if len(content) <= pageSize {
@@ -96,10 +103,10 @@ func (ps *PageStore) Store(content string, pageSize int, user, server, tool stri
 }
 
 // Next returns the page indicated by cursor.
-func (ps *PageStore) Next(cursor string) (page, nextCursor string, hasMore bool, user, server, tool string, ok bool) {
+func (ps *PageStore) Next(cursor, expectedUser string) (page, nextCursor string, hasMore bool, server, tool string, ok bool) {
 	id, idx, err := parseCursor(cursor)
 	if err != nil {
-		return "", "", false, "", "", "", false
+		return "", "", false, "", "", false
 	}
 
 	ps.mu.Lock()
@@ -107,21 +114,25 @@ func (ps *PageStore) Next(cursor string) (page, nextCursor string, hasMore bool,
 
 	pr, exists := ps.entries[id]
 	if !exists {
-		return "", "", false, "", "", "", false
+		return "", "", false, "", "", false
 	}
+
+	// Security check: Do not refresh TTL for unauthorized access.
+	if pr.user != expectedUser {
+		return "", "", false, "", "", false
+	}
+
 	if idx < 1 || idx > len(pr.pages) {
-		return "", "", false, "", "", "", false
+		return "", "", false, "", "", false
 	}
 
 	pr.createdAt = time.Now() // refresh TTL on access
 	page = pr.pages[idx-1]
-
 	hasMore = idx < len(pr.pages)
 	if hasMore {
 		nextCursor = cursorFor(id, idx+1)
 	}
-
-	return page, nextCursor, hasMore, pr.user, pr.server, pr.tool, true
+	return page, nextCursor, hasMore, pr.server, pr.tool, true
 }
 
 func (ps *PageStore) reaper() {
