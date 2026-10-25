@@ -68,6 +68,7 @@ func main() {
 			})
 
 		case "tools/list":
+			// 1. Инъекция RPC-ошибки (нужна для тестов circuit breaker)
 			if rpcCode, _ := strconv.Atoi(os.Getenv("MOCK_RPC_ERROR_CODE")); rpcCode != 0 {
 				_ = out.Encode(map[string]any{
 					"jsonrpc": "2.0",
@@ -79,8 +80,27 @@ func main() {
 				})
 				continue
 			}
-			list := make([]map[string]any, 0, len(tools))
-			for _, name := range tools {
+
+			// 2. Логика пагинации
+			startIdx := 0
+			var p struct {
+				Cursor string `json:"cursor"`
+			}
+			_ = json.Unmarshal(req.Params, &p)
+			if p.Cursor != "" {
+				fmt.Sscanf(p.Cursor, "page-%d", &startIdx)
+			}
+
+			endIdx := len(tools)
+			nextCursor := ""
+			if os.Getenv("MOCK_TOOLS_PAGINATED") == "1" && endIdx-startIdx > 1 {
+				endIdx = startIdx + 1
+				nextCursor = fmt.Sprintf("page-%d", endIdx)
+			}
+
+			// 3. Сборка списка с аннотациями
+			list := make([]map[string]any, 0, endIdx-startIdx)
+			for _, name := range tools[startIdx:endIdx] {
 				annot := map[string]any{}
 				switch {
 				case strings.HasSuffix(name, "_ro"):
@@ -98,7 +118,13 @@ func main() {
 				}
 				list = append(list, tool)
 			}
-			write(out, *req.ID, map[string]any{"tools": list})
+
+			// 4. Формирование ответа
+			res := map[string]any{"tools": list}
+			if nextCursor != "" {
+				res["nextCursor"] = nextCursor
+			}
+			write(out, *req.ID, res)
 
 		case "tools/call":
 			calls++

@@ -60,9 +60,10 @@ type backendProcess struct {
 	stdin io.WriteCloser
 	enc   *json.Encoder
 
-	pending map[int64]chan *rpcMessage
-	scanErr error
-	ready   bool
+	pending     map[int64]chan *rpcMessage
+	scanErr     error
+	ready       bool
+	activeCalls int
 
 	nextID atomic.Int64
 
@@ -230,9 +231,16 @@ func (p *backendProcess) request(ctx context.Context, method string, params any)
 		p.mu.Unlock()
 		return nil, fmt.Errorf("backend dead: %w", err)
 	}
-	gen := p.generation
 	p.pending[id] = ch
+	p.activeCalls++
+	gen := p.generation
 	p.mu.Unlock()
+
+	defer func() {
+		p.mu.Lock()
+		p.activeCalls--
+		p.mu.Unlock()
+	}()
 
 	req := map[string]any{
 		"jsonrpc": "2.0",
@@ -295,29 +303,55 @@ func (p *backendProcess) write(v any) error {
 
 // ListTools calls tools/list on the backend.
 func (p *backendProcess) ListTools(ctx context.Context) ([]ToolInfo, error) {
-	res, err := p.request(ctx, "tools/list", map[string]any{})
-	if err != nil {
-		return nil, err
+	var allTools []ToolInfo
+	cursor := ""
+	seenCursors := make(map[string]bool)
+
+	for {
+		params := map[string]any{}
+		if cursor != "" {
+			params["cursor"] = cursor
+		}
+
+		res, err := p.request(ctx, "tools/list", params)
+		if err != nil {
+			return nil, err
+		}
+
+		type rawTool struct {
+			Name        string          `json:"name"`
+			Description string          `json:"description"`
+			InputSchema json.RawMessage `json:"inputSchema"`
+			Annotations ToolAnnotations `json:"annotations,omitempty"`
+		}
+		type listResult struct {
+			Tools      []rawTool `json:"tools"`
+			NextCursor string    `json:"nextCursor,omitempty"`
+		}
+		var lr listResult
+		if err := json.Unmarshal(res, &lr); err != nil {
+			return nil, fmt.Errorf("parse tools/list: %w", err)
+		}
+
+		for _, t := range lr.Tools {
+			allTools = append(allTools, ToolInfo(t))
+		}
+
+		if lr.NextCursor == "" {
+			break // конец пагинации
+		}
+
+		// Защита от бесконечного цикла, если сервер зациклит курсор
+		if seenCursors[lr.NextCursor] {
+			p.log.Warn("tools/list returned duplicate cursor, stopping pagination",
+				"server", p.cfg.Name, "cursor", lr.NextCursor)
+			break
+		}
+		seenCursors[lr.NextCursor] = true
+		cursor = lr.NextCursor
 	}
 
-	type rawTool struct {
-		Name        string          `json:"name"`
-		Description string          `json:"description"`
-		InputSchema json.RawMessage `json:"inputSchema"`
-		Annotations ToolAnnotations `json:"annotations,omitempty"`
-	}
-	type listResult struct {
-		Tools []rawTool `json:"tools"`
-	}
-	var lr listResult
-	if err := json.Unmarshal(res, &lr); err != nil {
-		return nil, fmt.Errorf("parse tools/list: %w", err)
-	}
-	tools := make([]ToolInfo, 0, len(lr.Tools))
-	for _, t := range lr.Tools {
-		tools = append(tools, ToolInfo(t))
-	}
-	return tools, nil
+	return allTools, nil
 }
 
 // CallTool calls tools/call on the backend.
@@ -400,22 +434,17 @@ func (p *backendProcess) Alive() bool {
 // StopIfIdle stops the backend if it hasn't been used for at least ttl.
 // Returns true if the backend was stopped. ttl <= 0 is a no-op.
 func (p *backendProcess) StopIfIdle(ttl time.Duration) bool {
-	if ttl <= 0 {
-		return false
-	}
 	p.lifecycleMu.Lock()
 	defer p.lifecycleMu.Unlock()
 
 	p.mu.Lock()
-	if !p.ready || p.scanErr != nil {
+	// Если есть незавершенные вызовы, процесс не считается idle.
+	if !p.ready || p.scanErr != nil || p.activeCalls > 0 {
 		p.mu.Unlock()
 		return false
 	}
-	last := p.lastToolCall
-	if last.IsZero() {
-		last = p.startedAt
-	}
-	if time.Since(last) < ttl {
+	idle := time.Since(p.lastToolCall)
+	if idle < ttl {
 		p.mu.Unlock()
 		return false
 	}

@@ -542,3 +542,52 @@ func TestCancelledHalfOpenProbe(t *testing.T) {
 		t.Fatalf("circuit stuck in half-open")
 	}
 }
+
+func TestListTools_Pagination(t *testing.T) {
+	b := newTestBroker(t, []config.ServerConfig{
+		testServer("mock", map[string]string{
+			"MOCK_TOOLS":           "t1,t2,t3",
+			"MOCK_TOOLS_PAGINATED": "1",
+		}),
+	}, brokerOpts{})
+
+	tools, err := b.ListTools(context.Background(), "mock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tools) != 3 {
+		t.Fatalf("expected 3 tools after pagination, got %d: %v", len(tools), tools)
+	}
+}
+
+func TestReaper_DoesNotKillActiveCall(t *testing.T) {
+	b := newTestBroker(t, []config.ServerConfig{
+		testServer("mock", map[string]string{
+			"MOCK_CALL_DELAY": "300ms",
+		}),
+	}, brokerOpts{})
+
+	// Запускаем вызов в фоне
+	done := make(chan error, 1)
+	go func() {
+		_, err := b.CallTool(context.Background(), "mock", "echo", nil)
+		done <- err
+	}()
+
+	// Ждем, пока запрос точно начнется
+	time.Sleep(50 * time.Millisecond)
+
+	// Пытаемся убить процесс с нулевым TTL (он не должен убиться, так как activeCalls > 0)
+	b.mu.Lock()
+	proc := b.pool["mock"].(*backendProcess)
+	b.mu.Unlock()
+
+	if proc.StopIfIdle(0) {
+		t.Fatalf("StopIfIdle killed the backend during an active call")
+	}
+
+	// Дожидаемся окончания вызова
+	if err := <-done; err != nil {
+		t.Fatalf("CallTool failed: %v", err)
+	}
+}
