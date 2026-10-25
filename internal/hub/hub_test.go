@@ -410,3 +410,50 @@ func TestBroadcast_RespectsACL(t *testing.T) {
 		t.Fatalf("elsa should receive public, got: %s", gotElsa)
 	}
 }
+
+func TestPost_DoesNotCreateSessionOnInvalidJSON(t *testing.T) {
+	h, ts := newTestHub(t, basicCfg())
+
+	// Отправляем мусор без session ID
+	req, _ := http.NewRequest("POST", ts.URL+"/mcp", strings.NewReader(`not json`))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("got %d, want 400", resp.StatusCode)
+	}
+
+	// Проверяем, что сессия не создалась
+	h.mu.RLock()
+	count := len(h.sessions)
+	h.mu.RUnlock()
+	if count != 0 {
+		t.Fatalf("session created for invalid payload: %d", count)
+	}
+}
+
+func TestSession_DeleteRemovesFromMap(t *testing.T) {
+	h, ts := newTestHub(t, basicCfg())
+
+	resp := doMCP(t, ts.URL, "", "", `{"jsonrpc":"2.0","id":1,"method":"initialize"}`)
+	sid := resp.Header.Get("Mcp-Session-Id")
+	resp.Body.Close()
+
+	reqD, _ := http.NewRequest("DELETE", ts.URL+"/mcp", nil)
+	reqD.Header.Set("Mcp-Session-Id", sid)
+	respD, _ := http.DefaultClient.Do(reqD)
+	respD.Body.Close()
+	if respD.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete: %d", respD.StatusCode)
+	}
+
+	h.mu.RLock()
+	_, stillThere := h.sessions[sid]
+	h.mu.RUnlock()
+	if stillThere {
+		t.Fatal("DELETE returned 204 but session remains in map")
+	}
+}

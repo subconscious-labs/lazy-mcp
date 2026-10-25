@@ -168,13 +168,24 @@ func (h *Hub) handleMCP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Hub) handlePost(w http.ResponseWriter, r *http.Request) {
-	sess, st := h.sessionForPost(w, r)
-	if sess == nil {
+	// If a session ID is provided, validate it first so that a deleted
+	// or stolen session returns 404 rather than a body-parsing error.
+	if r.Header.Get("Mcp-Session-Id") != "" {
+		st := h.sessionForPrincipal(w, r)
+		if st == nil {
+			return
+		}
+		body, err := io.ReadAll(io.LimitReader(r.Body, 8<<20))
+		if err != nil {
+			http.Error(w, "read body", http.StatusBadRequest)
+			return
+		}
+		h.processPost(w, r, st.sess, st, body)
 		return
 	}
-	defer sess.Touch()
-	st.sess.Touch()
 
+	// No session ID: validate JSON-RPC before creating a session
+	// (saves resources from unauthenticated garbage).
 	body, err := io.ReadAll(io.LimitReader(r.Body, 8<<20))
 	if err != nil {
 		http.Error(w, "read body", http.StatusBadRequest)
@@ -185,6 +196,31 @@ func (h *Hub) handlePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var envelope struct {
+		JSONRPC string `json:"jsonrpc"`
+		Method  string `json:"method"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil || envelope.JSONRPC != "2.0" || envelope.Method == "" {
+		http.Error(w, "invalid JSON-RPC envelope", http.StatusBadRequest)
+		return
+	}
+
+	sess, st := h.sessionForPost(w, r)
+	if sess == nil {
+		return
+	}
+	h.processPost(w, r, sess, st, body)
+}
+
+func (h *Hub) processPost(w http.ResponseWriter, r *http.Request, sess *session.Session, st *sessState, body []byte) {
+	if len(body) == 0 {
+		http.Error(w, "empty body", http.StatusBadRequest)
+		return
+	}
+
+	defer sess.Touch()
+	st.sess.Touch()
+
 	ctx := session.WithContext(r.Context(), sess)
 	resp, err := h.mcp.Handle(ctx, body)
 	if err != nil {
@@ -192,7 +228,6 @@ func (h *Hub) handlePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if resp == nil {
-		// Notification: no response body.
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
