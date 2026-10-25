@@ -340,7 +340,8 @@ func (h *Handlers) ListServers(ctx context.Context, args map[string]any) (string
 
 	_, sess := sessionUser(ctx)
 	if sess != nil && sess.Role != "admin" {
-		kept := servers[:0]
+		// Allocate a new slice to avoid mutating the shared config.
+		var kept []config.ServerConfig
 		for _, s := range servers {
 			if sess.CanSeeServer(s.Name) {
 				kept = append(kept, s)

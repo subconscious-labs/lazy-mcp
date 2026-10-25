@@ -15,6 +15,7 @@ import (
 	"github.com/subconscious-labs/lazy-mcp/internal/config"
 	"github.com/subconscious-labs/lazy-mcp/internal/logx"
 	"github.com/subconscious-labs/lazy-mcp/internal/policy"
+	"github.com/subconscious-labs/lazy-mcp/internal/session"
 )
 
 func TestWrapResult(t *testing.T) {
@@ -445,5 +446,34 @@ func TestCall_DenyDestructive(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "destructive") {
 		t.Fatalf("expected destructive error, got %v", err)
+	}
+}
+
+func TestListServers_DoesNotMutateConfig(t *testing.T) {
+	holder := config.NewHolder(&config.Config{
+		Servers: []config.ServerConfig{
+			{Name: "a", Enabled: true},
+			{Name: "b", Enabled: true},
+			{Name: "c", Enabled: true},
+		},
+	})
+	h := &Handlers{cfg: holder, log: logx.New(io.Discard)}
+
+	ctx := session.WithContext(context.Background(),
+		session.New("s1", "elsa", "agent", []string{"b"}))
+
+	// Запрос с include_disabled=true (именно он ломал слайс)
+	_, err := h.ListServers(ctx, map[string]any{"include_disabled": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Проверяем, что в конфиге всё ещё a, b, c, а не b, b, c
+	cfgServers := holder.Get().Servers
+	if len(cfgServers) != 3 {
+		t.Fatalf("config mutated: len=%d", len(cfgServers))
+	}
+	if cfgServers[0].Name != "a" || cfgServers[1].Name != "b" || cfgServers[2].Name != "c" {
+		t.Fatalf("config mutated: %v", cfgServers)
 	}
 }
