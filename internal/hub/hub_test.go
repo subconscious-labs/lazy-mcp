@@ -263,3 +263,79 @@ func TestOrigin_Rejected(t *testing.T) {
 		t.Fatalf("allowed origin got rejected")
 	}
 }
+
+func doMCP(t *testing.T, base, token, sid, body string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest("POST", base+"/mcp", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	if sid != "" {
+		req.Header.Set("Mcp-Session-Id", sid)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
+func TestSession_BoundToPrincipal(t *testing.T) {
+	cfg := basicCfg()
+	cfg.Auth = config.AuthConfig{
+		Enabled: true,
+		Users: []config.AuthUserConfig{
+			{Name: "admin", TokenSHA256: tokenHash("admin-tok"), Role: "admin"},
+			{Name: "elsa", TokenSHA256: tokenHash("elsa-tok"), Role: "agent",
+				AllowedServers: []string{"git"}},
+		},
+	}
+	_, ts := newTestHub(t, cfg)
+
+	// Admin creates a session.
+	respA := doMCP(t, ts.URL, "admin-tok", "", `{"jsonrpc":"2.0","id":1,"method":"initialize"}`)
+	adminSID := respA.Header.Get("Mcp-Session-Id")
+	respA.Body.Close()
+	if adminSID == "" {
+		t.Fatal("no session")
+	}
+
+	// Elsa tries to use admin's session ID.
+	respB := doMCP(t, ts.URL, "elsa-tok", adminSID, `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`)
+	bodyB, _ := io.ReadAll(respB.Body)
+	respB.Body.Close()
+	if respB.StatusCode != http.StatusNotFound {
+		t.Fatalf("elsa using admin session: got %d, want 404; body=%s",
+			respB.StatusCode, bodyB)
+	}
+
+	// Elsa tries to delete admin's session.
+	reqD, _ := http.NewRequest("DELETE", ts.URL+"/mcp", nil)
+	reqD.Header.Set("Authorization", "Bearer elsa-tok")
+	reqD.Header.Set("Mcp-Session-Id", adminSID)
+	respD, _ := http.DefaultClient.Do(reqD)
+	respD.Body.Close()
+	if respD.StatusCode != http.StatusNotFound {
+		t.Fatalf("elsa deleting admin session: got %d, want 404", respD.StatusCode)
+	}
+
+	// Elsa tries to open SSE on admin's session.
+	reqS, _ := http.NewRequest("GET", ts.URL+"/mcp", nil)
+	reqS.Header.Set("Authorization", "Bearer elsa-tok")
+	reqS.Header.Set("Mcp-Session-Id", adminSID)
+	reqS.Header.Set("Accept", "text/event-stream")
+	respS, _ := http.DefaultClient.Do(reqS)
+	respS.Body.Close()
+	if respS.StatusCode != http.StatusNotFound {
+		t.Fatalf("elsa sse on admin session: got %d, want 404", respS.StatusCode)
+	}
+
+	// Admin's session is untouched.
+	respC := doMCP(t, ts.URL, "admin-tok", adminSID, `{"jsonrpc":"2.0","id":3,"method":"tools/list"}`)
+	respC.Body.Close()
+	if respC.StatusCode != http.StatusOK {
+		t.Fatalf("admin session after attack: got %d, want 200", respC.StatusCode)
+	}
+}

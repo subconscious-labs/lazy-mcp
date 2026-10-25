@@ -201,16 +201,8 @@ func (h *Hub) handlePost(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Hub) handleSSE(w http.ResponseWriter, r *http.Request) {
-	id := r.Header.Get("Mcp-Session-Id")
-	if id == "" {
-		http.Error(w, "Mcp-Session-Id required", http.StatusBadRequest)
-		return
-	}
-	h.mu.RLock()
-	st := h.sessions[id]
-	h.mu.RUnlock()
+	st := h.sessionForPrincipal(w, r)
 	if st == nil {
-		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
 
@@ -251,34 +243,62 @@ func (h *Hub) handleSSE(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Hub) handleDelete(w http.ResponseWriter, r *http.Request) {
-	id := r.Header.Get("Mcp-Session-Id")
-	if id == "" {
-		http.Error(w, "Mcp-Session-Id required", http.StatusBadRequest)
+	st := h.sessionForPrincipal(w, r)
+	if st == nil {
 		return
 	}
+
 	h.mu.Lock()
-	st := h.sessions[id]
-	delete(h.sessions, id)
+	delete(h.sessions, st.sess.ID)
 	active := len(h.sessions)
 	h.mu.Unlock()
 	observability.Default().SetSessionsActive(active)
-	if st == nil {
-		http.Error(w, "session not found", http.StatusNotFound)
-		return
-	}
+
 	st.close()
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// sessionForPrincipal returns the session identified by Mcp-Session-Id
+// only if it belongs to the currently authenticated principal. Returns
+// nil and writes an HTTP error otherwise.
+//
+// A session ID is an addressing token, not an authentication token:
+// knowing it must not grant someone else's role.
+func (h *Hub) sessionForPrincipal(w http.ResponseWriter, r *http.Request) *sessState {
+	id := r.Header.Get("Mcp-Session-Id")
+	if id == "" {
+		http.Error(w, "Mcp-Session-Id required", http.StatusBadRequest)
+		return nil
+	}
+	u := userFromContext(r.Context())
+	if u == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return nil
+	}
+
+	h.mu.RLock()
+	st := h.sessions[id]
+	h.mu.RUnlock()
+	if st == nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return nil
+	}
+
+	// Bind session to the authenticated principal.
+	if st.sess.User != u.Name {
+		// Don't leak existence: 404 for someone else's session.
+		http.Error(w, "session not found", http.StatusNotFound)
+		return nil
+	}
+	return st
 }
 
 // sessionForPost returns the existing session from Mcp-Session-Id or
 // creates a new one and echoes the id back in the response header.
 func (h *Hub) sessionForPost(w http.ResponseWriter, r *http.Request) (*session.Session, *sessState) {
 	if id := r.Header.Get("Mcp-Session-Id"); id != "" {
-		h.mu.RLock()
-		st := h.sessions[id]
-		h.mu.RUnlock()
+		st := h.sessionForPrincipal(w, r)
 		if st == nil {
-			http.Error(w, "session not found", http.StatusNotFound)
 			return nil, nil
 		}
 		return st.sess, st
