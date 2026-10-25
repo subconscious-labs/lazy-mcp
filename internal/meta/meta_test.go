@@ -78,7 +78,7 @@ func newTestHandlers() *Handlers {
 
 func TestBuildResponse_NoPageWhenSinglePage(t *testing.T) {
 	h := newTestHandlers()
-	out, err := h.buildResponse("short result", 0)
+	out, err := h.buildResponse("short result", 0, "", "srv", "tool")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestBuildResponse_NoPageWhenSinglePage(t *testing.T) {
 func TestBuildResponse_PageWhenPaginating(t *testing.T) {
 	h := newTestHandlers()
 	big := strings.Repeat("x", 10000)
-	out, err := h.buildResponse(big, 1000)
+	out, err := h.buildResponse(big, 1000, "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestBuildResponse_AutoPaginateOnMaxBytes(t *testing.T) {
 	h := newTestHandlers() // MaxResultBytes: 4096
 	// Result larger than MaxResultBytes, no page_size requested.
 	body := strings.Repeat("line\n", 2000) // 10000 bytes
-	out, err := h.buildResponse(body, 0)
+	out, err := h.buildResponse(body, 0, "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestBuildResponse_AutoPaginateOnMaxBytes(t *testing.T) {
 func TestBuildResponse_NoAutoPageWhenFits(t *testing.T) {
 	h := newTestHandlers()
 	small := strings.Repeat("x", 100) // < MaxResultBytes 4096
-	out, err := h.buildResponse(small, 0)
+	out, err := h.buildResponse(small, 0, "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestBuildResponse_NoAutoPageWhenFits(t *testing.T) {
 
 func TestBuildResponse_EmbedsJSONResult(t *testing.T) {
 	h := newTestHandlers()
-	out, err := h.buildResponse(`{"status":"ok","n":3}`, 0)
+	out, err := h.buildResponse(`{"status":"ok","n":3}`, 0, "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +243,7 @@ func TestSplitRef(t *testing.T) {
 
 func TestPageStore_SinglePageNoCursor(t *testing.T) {
 	ps := NewPageStore(time.Minute)
-	first, cur, more := ps.Store("short", 100)
+	first, cur, more := ps.Store("short", 100, "", "", "")
 	if first != "short" || cur != "" || more {
 		t.Fatalf("got %q, %q, %v", first, cur, more)
 	}
@@ -253,7 +253,7 @@ func TestPageStore_MultiPage(t *testing.T) {
 	ps := NewPageStore(time.Minute)
 	content := strings.Repeat("line\n", 100)
 
-	first, cur, more := ps.Store(content, 120)
+	first, cur, more := ps.Store(content, 120, "", "", "")
 	if !more || cur == "" {
 		t.Fatalf("expected multi-page, got more=%v cur=%q", more, cur)
 	}
@@ -263,7 +263,7 @@ func TestPageStore_MultiPage(t *testing.T) {
 
 	total := len(first)
 	for cur != "" {
-		page, next, more, ok := ps.Next(cur)
+		page, next, more, _, _, _, ok := ps.Next(cur)
 		if !ok {
 			t.Fatal("cursor rejected")
 		}
@@ -282,17 +282,17 @@ func TestPageStore_MultiPage(t *testing.T) {
 func TestPageStore_IdempotentCursor(t *testing.T) {
 	ps := NewPageStore(time.Minute)
 	content := strings.Repeat("line\n", 100) // 500 bytes
-	_, cur, more := ps.Store(content, 120)
+	_, cur, more := ps.Store(content, 120, "", "", "")
 	if !more {
 		t.Fatal("expected multi-page")
 	}
 
 	// Fetch page 2 twice — must yield the same bytes.
-	page1, next1, _, ok := ps.Next(cur)
+	page1, next1, _, _, _, _, ok := ps.Next(cur)
 	if !ok {
 		t.Fatal("first Next failed")
 	}
-	page2, next2, _, ok := ps.Next(cur)
+	page2, next2, _, _, _, _, ok := ps.Next(cur)
 	if !ok {
 		t.Fatal("second Next failed")
 	}
@@ -307,14 +307,14 @@ func TestPageStore_IdempotentCursor(t *testing.T) {
 func TestPageStore_NextByArbitraryIndex(t *testing.T) {
 	ps := NewPageStore(time.Minute)
 	content := strings.Repeat("line\n", 100)
-	_, cur, _ := ps.Store(content, 120)
+	_, cur, _ := ps.Store(content, 120, "", "", "")
 
 	// Extract session id from cur and jump to page 3 directly.
 	id, _, err := parseCursor(cur)
 	if err != nil {
 		t.Fatal(err)
 	}
-	page3, _, _, ok := ps.Next(cursorFor(id, 3))
+	page3, _, _, _, _, _, ok := ps.Next(cursorFor(id, 3))
 	if !ok {
 		t.Fatal("direct page 3 fetch failed")
 	}
@@ -333,7 +333,7 @@ func TestParseCursor_RejectsGarbage(t *testing.T) {
 
 func TestPageStore_UnknownCursor(t *testing.T) {
 	ps := NewPageStore(time.Minute)
-	_, _, _, ok := ps.Next("nope")
+	_, _, _, _, _, _, ok := ps.Next("nope")
 	if ok {
 		t.Fatal("unknown cursor should be rejected")
 	}
@@ -475,5 +475,34 @@ func TestListServers_DoesNotMutateConfig(t *testing.T) {
 	}
 	if cfgServers[0].Name != "a" || cfgServers[1].Name != "b" || cfgServers[2].Name != "c" {
 		t.Fatalf("config mutated: %v", cfgServers)
+	}
+}
+
+func TestCursor_BoundToUser(t *testing.T) {
+	holder := config.NewHolder(&config.Config{
+		Proxy: config.ProxyConfig{MaxResultBytes: 1024},
+		Servers: []config.ServerConfig{
+			{Name: "srv", Enabled: true},
+		},
+	})
+	pol := policy.New(holder)
+	h := &Handlers{
+		cfg:    holder,
+		policy: pol,
+		pager:  NewPageStore(time.Minute),
+	}
+
+	// Создаём страницу от имени userA
+	out, err := h.buildResponse(strings.Repeat("x", 2000), 1000, "userA", "srv", "tool")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resp callResult
+	json.Unmarshal([]byte(out), &resp)
+
+	// userB пытается продолжить
+	_, err = h.callCursorNext(context.Background(), resp.NextCursor, "userB", nil)
+	if err == nil || !strings.Contains(err.Error(), "not found or expired") {
+		t.Fatalf("userB should not be able to use userA's cursor, got: %v", err)
 	}
 }

@@ -15,6 +15,9 @@ import (
 type pagedResult struct {
 	pages     []string
 	createdAt time.Time
+	user      string
+	server    string
+	tool      string
 }
 
 // PageStore stores cursor → pagedResult with TTL-based expiry.
@@ -45,7 +48,7 @@ func NewPageStore(ttl time.Duration) *PageStore {
 
 // Store splits content into pages of pageSize bytes and returns the first
 // page plus a cursor for subsequent pages (empty cursor if only one page).
-func (ps *PageStore) Store(content string, pageSize int) (firstPage, cursor string, hasMore bool) {
+func (ps *PageStore) Store(content string, pageSize int, user, server, tool string) (firstPage, cursor string, hasMore bool) {
 	if pageSize <= 0 || len(content) <= pageSize {
 		return content, "", false
 	}
@@ -83,6 +86,9 @@ func (ps *PageStore) Store(content string, pageSize int) (firstPage, cursor stri
 	ps.entries[id] = &pagedResult{
 		pages:     pages,
 		createdAt: time.Now(),
+		user:      user,
+		server:    server,
+		tool:      tool,
 	}
 	ps.mu.Unlock()
 
@@ -90,10 +96,10 @@ func (ps *PageStore) Store(content string, pageSize int) (firstPage, cursor stri
 }
 
 // Next returns the page indicated by cursor.
-func (ps *PageStore) Next(cursor string) (page, nextCursor string, hasMore bool, ok bool) {
+func (ps *PageStore) Next(cursor string) (page, nextCursor string, hasMore bool, user, server, tool string, ok bool) {
 	id, idx, err := parseCursor(cursor)
 	if err != nil {
-		return "", "", false, false
+		return "", "", false, "", "", "", false
 	}
 
 	ps.mu.Lock()
@@ -101,18 +107,21 @@ func (ps *PageStore) Next(cursor string) (page, nextCursor string, hasMore bool,
 
 	pr, exists := ps.entries[id]
 	if !exists {
-		return "", "", false, false
+		return "", "", false, "", "", "", false
 	}
 	if idx < 1 || idx > len(pr.pages) {
-		return "", "", false, false
+		return "", "", false, "", "", "", false
 	}
 
 	pr.createdAt = time.Now() // refresh TTL on access
 	page = pr.pages[idx-1]
-	if idx < len(pr.pages) {
-		return page, cursorFor(id, idx+1), true, true
+
+	hasMore = idx < len(pr.pages)
+	if hasMore {
+		nextCursor = cursorFor(id, idx+1)
 	}
-	return page, "", false, true
+
+	return page, nextCursor, hasMore, pr.user, pr.server, pr.tool, true
 }
 
 func (ps *PageStore) reaper() {

@@ -146,16 +146,18 @@ type callResult struct {
 
 // Call routes a tool call to the correct backend with optional pagination.
 func (h *Handlers) Call(ctx context.Context, args map[string]any) (string, error) {
+	user, sess := sessionUser(ctx)
+
+	// --- Cursor continuation path ---
 	if cursor, ok := args["cursor"].(string); ok && cursor != "" {
-		return h.callCursorNext(cursor)
+		return h.callCursorNext(ctx, cursor, user, sess)
 	}
 
+	// --- First call path ---
 	server, tool, err := h.resolveTarget(args)
 	if err != nil {
 		return "", err
 	}
-
-	user, sess := sessionUser(ctx)
 	if sess != nil && !sess.CanSeeServer(server) {
 		return "", fmt.Errorf("call: server %q is not permitted for user %q", server, user)
 	}
@@ -204,14 +206,22 @@ func (h *Handlers) Call(ctx context.Context, args map[string]any) (string, error
 		return "", fmt.Errorf("call %s/%s: %w", server, tool, err)
 	}
 
-	return h.buildResponse(raw, pageSize)
+	return h.buildResponse(raw, pageSize, user, server, tool)
 }
 
 // callCursorNext fetches the next page for an existing cursor.
-func (h *Handlers) callCursorNext(cursor string) (string, error) {
-	page, nextCursor, hasMore, ok := h.pager.Next(cursor)
-	if !ok {
+func (h *Handlers) callCursorNext(_ context.Context, cursor, user string, sess *session.Session) (string, error) {
+	page, nextCursor, hasMore, owner, server, tool, ok := h.pager.Next(cursor)
+	if !ok || owner != user {
+		// Do not leak existence of someone else's cursor.
 		return "", fmt.Errorf("call: cursor %q not found or expired", cursor)
+	}
+
+	if sess != nil && !sess.CanSeeServer(server) {
+		return "", fmt.Errorf("call: server %q is not permitted for user %q", server, user)
+	}
+	if err := h.policy.Check(user, server, tool); err != nil {
+		return "", err
 	}
 
 	out := callResult{
@@ -227,7 +237,7 @@ func (h *Handlers) callCursorNext(cursor string) (string, error) {
 }
 
 // buildResponse applies the max_result_bytes safety net and pagination.
-func (h *Handlers) buildResponse(raw string, pageSize int) (string, error) {
+func (h *Handlers) buildResponse(raw string, pageSize int, user, server, tool string) (string, error) {
 	maxBytes := h.cfg.Get().Proxy.MaxResultBytes
 	autoPaged := false
 
@@ -239,7 +249,7 @@ func (h *Handlers) buildResponse(raw string, pageSize int) (string, error) {
 		autoPaged = true
 	}
 
-	firstPage, cursor, hasMore := h.pager.Store(raw, pageSize)
+	firstPage, cursor, hasMore := h.pager.Store(raw, pageSize, user, server, tool)
 	out := callResult{
 		Result:     wrapResult(firstPage),
 		NextCursor: cursor,

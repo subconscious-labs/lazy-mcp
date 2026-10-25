@@ -11,7 +11,7 @@ func BenchmarkPageStore_Small(b *testing.B) {
 	content := strings.Repeat("hello world ", 100) // ~1.2 KiB
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _, _ = ps.Store(content, 256)
+		_, _, _ = ps.Store(content, 256, "", "", "")
 	}
 }
 
@@ -20,7 +20,7 @@ func BenchmarkPageStore_Large(b *testing.B) {
 	content := strings.Repeat("hello world ", 10000) // ~120 KiB
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _, _ = ps.Store(content, 4096)
+		_, _, _ = ps.Store(content, 4096, "", "", "")
 	}
 }
 
