@@ -54,6 +54,8 @@ type Broker struct {
 	policy *policy.Policy
 	log    *logx.Logger
 
+	reloadMu sync.RWMutex // RLock in Ensure, Lock in ApplyConfig
+
 	mu   sync.Mutex
 	pool map[string]Backend
 
@@ -88,6 +90,7 @@ func (b *Broker) Ensure(ctx context.Context, serverName string) (Backend, error)
 		return nil, fmt.Errorf("broker: server %q is disabled", serverName)
 	}
 
+	b.reloadMu.RLock()
 	b.mu.Lock()
 	proc, exists := b.pool[serverName]
 	if !exists {
@@ -102,6 +105,7 @@ func (b *Broker) Ensure(ctx context.Context, serverName string) (Backend, error)
 		b.pool[serverName] = proc
 	}
 	b.mu.Unlock()
+	b.reloadMu.RUnlock()
 
 	startCtx, cancel := context.WithTimeout(ctx, cfg.Proxy.InitializeTimeout)
 	defer cancel()
@@ -314,6 +318,9 @@ func (b *Broker) Status(serverName string) ServerStatus {
 // Servers removed, disabled, or whose command/args/env changed are stopped.
 // Added servers and re-enabled servers start lazily on next Ensure.
 func (b *Broker) ApplyConfig(oldCfg, newCfg *config.Config) {
+	b.reloadMu.Lock()
+	defer b.reloadMu.Unlock()
+
 	oldServers := make(map[string]config.ServerConfig, len(oldCfg.Servers))
 	for _, s := range oldCfg.Servers {
 		oldServers[s.Name] = s

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -24,6 +25,8 @@ import (
 	"github.com/subconscious-labs/lazy-mcp/internal/observability"
 	"github.com/subconscious-labs/lazy-mcp/internal/policy"
 )
+
+var reloadMutex sync.Mutex
 
 func main() {
 	cfgPath := flag.String("config", "config.yaml", "path to config file")
@@ -111,6 +114,20 @@ func main() {
 		}
 	}
 	brok.StartIdleReaper(ctx)
+
+	// Autostart: bring up backends that opted in. Lazy servers stay
+	// down until the first call; this is for operators who want a
+	// warm pool at boot.
+	for _, srv := range cfg.EnabledServers() {
+		if !srv.Autostart {
+			continue
+		}
+		if _, err := brok.Ensure(ctx, srv.Name); err != nil {
+			log.Warn("autostart failed", "server", srv.Name, "err", err)
+		} else {
+			log.Info("autostart: backend started", "server", srv.Name)
+		}
+	}
 
 	if cfg.Proxy.MetricsFile != "" {
 		col := observability.Default()
@@ -248,6 +265,9 @@ func main() {
 // full restart). Errors mean the config was not applied — the old
 // configuration stays live.
 func reload(cfgPath string, holder *config.Holder, pol *policy.Policy, brok *broker.Broker, cat *catalog.Catalog, log *logx.Logger) ([]string, error) {
+	reloadMutex.Lock()
+	defer reloadMutex.Unlock()
+
 	log.Info("reload: loading config", "path", cfgPath)
 
 	newCfg, err := config.Load(cfgPath)
@@ -259,10 +279,20 @@ func reload(cfgPath string, holder *config.Holder, pol *policy.Policy, brok *bro
 	var warnings []string
 	warnings = append(warnings, config.DrainWarnings()...)
 
-	old := holder.Swap(newCfg)
+	old := holder.Get()
+
+	// 1. Stop backends that changed — under reloadMu.Lock inside ApplyConfig.
+	brok.ApplyConfig(old, newCfg)
+
+	// 2. Invalidate caches.
 	pol.Invalidate()
 	cat.Invalidate()
-	brok.ApplyConfig(old, newCfg)
+
+	// 3. Publish the new config last, so every Ensure that observes
+	//    the new config also observes the reconciled broker pool.
+	holder.Swap(newCfg)
+
+	// 4. Prune the catalog.
 	cat.ApplyConfig(newCfg)
 
 	if newCfg.Proxy.LogFile != old.Proxy.LogFile {

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/subconscious-labs/lazy-mcp/internal/config"
@@ -102,6 +103,9 @@ func (p *backendProcess) start(ctx context.Context) error {
 	cmd := exec.Command(p.cfg.Command, p.cfg.Args...)
 	cmd.Env = buildEnv(p.cfg)
 	cmd.Stderr = os.Stderr // backend stderr flows through
+	// Put the child in its own process group so that killing the group
+	// also stops shell wrappers and their children.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -516,8 +520,24 @@ func (p *backendProcess) killGenLocked(gen int) {
 	p.writeMu.Unlock()
 
 	if proc != nil && proc.Process != nil {
-		_ = proc.Process.Kill()
-		_ = proc.Wait()
+		// Negative PID sends the signal to the whole process group.
+		if err := syscall.Kill(-proc.Process.Pid, syscall.SIGTERM); err != nil {
+			// Fallback: kill just the process if the group doesn't exist.
+			_ = proc.Process.Kill()
+		}
+
+		// Give the process a short window to exit gracefully, then force-kill.
+		done := make(chan struct{})
+		go func() {
+			_ = proc.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			_ = syscall.Kill(-proc.Process.Pid, syscall.SIGKILL)
+			<-done
+		}
 	}
 }
 
