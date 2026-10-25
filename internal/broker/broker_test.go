@@ -172,7 +172,7 @@ func TestEnsure_RestartsAfterDeath(t *testing.T) {
 
 	// Kill the underlying process from underneath the broker.
 	b.mu.Lock()
-	proc := b.pool["mock"]
+	proc := b.pool["mock"].(*backendProcess)
 	b.mu.Unlock()
 	proc.kill()
 
@@ -418,7 +418,7 @@ func TestIdleReaper_StopsIdleBackend(t *testing.T) {
 
 	// Rewind last activity to simulate idle.
 	b.mu.Lock()
-	proc := b.pool["mock"]
+	proc := b.pool["mock"].(*backendProcess)
 	b.mu.Unlock()
 	proc.mu.Lock()
 	proc.lastToolCall = time.Now().Add(-time.Hour)

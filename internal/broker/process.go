@@ -69,7 +69,7 @@ type backendProcess struct {
 	notifHandler NotificationHandler // guarded by mu
 }
 
-func newBackendProcess(cfg config.ServerConfig, log *logx.Logger) *backendProcess {
+func newProcessBackend(cfg config.ServerConfig, log *logx.Logger) *backendProcess {
 	return &backendProcess{cfg: cfg, log: log}
 }
 
@@ -432,7 +432,7 @@ func (p *backendProcess) Stop() {
 	p.log.Info("backend stopped", "server", p.cfg.Name)
 }
 
-func (p *backendProcess) setNotificationHandler(h NotificationHandler) {
+func (p *backendProcess) SetNotificationHandler(h NotificationHandler) {
 	p.mu.Lock()
 	p.notifHandler = h
 	p.mu.Unlock()

@@ -121,12 +121,14 @@ func (c CircuitBreakerConfig) IsEnabled() bool {
 // ServerConfig describes a single stdio MCP backend.
 type ServerConfig struct {
 	Name           string            `yaml:"name"`
-	Transport      string            `yaml:"transport"` // "stdio"
+	Transport      string            `yaml:"transport"` // "stdio" | "http"
 	Command        string            `yaml:"command"`
 	Args           []string          `yaml:"args"`
 	Description    string            `yaml:"description"`
 	Tags           []string          `yaml:"tags"`
 	Env            map[string]string `yaml:"env"`
+	URL            string            `yaml:"url"`
+	Headers        map[string]string `yaml:"headers"`
 	Autostart      bool              `yaml:"autostart"`
 	Enabled        bool              `yaml:"enabled"`
 	DangerousTools []string          `yaml:"dangerous_tools"`
@@ -212,6 +214,11 @@ func (c *Config) defaults() {
 	}
 	if c.Proxy.LogFileMaxAgeDays <= 0 {
 		c.Proxy.LogFileMaxAgeDays = 30
+	}
+	for i := range c.Servers {
+		if c.Servers[i].Transport == "" {
+			c.Servers[i].Transport = "stdio"
+		}
 	}
 }
 
@@ -336,6 +343,27 @@ func (c *Config) validate() error {
 			if _, err := hex.DecodeString(u.TokenSHA256); err != nil {
 				return fmt.Errorf("auth.users[%d] %q: token_sha256 not hex: %w", i, u.Name, err)
 			}
+		}
+	}
+	// Validate server transport configs.
+	for i, s := range c.Servers {
+		switch s.Transport {
+		case "stdio", "":
+			if s.Command == "" {
+				return fmt.Errorf("servers[%d] %q: command is required for transport=stdio", i, s.Name)
+			}
+			if s.URL != "" || len(s.Headers) > 0 {
+				return fmt.Errorf("servers[%d] %q: url/headers are only valid for transport=http", i, s.Name)
+			}
+		case "http":
+			if s.URL == "" {
+				return fmt.Errorf("servers[%d] %q: url is required for transport=http", i, s.Name)
+			}
+			if s.Command != "" || len(s.Args) > 0 || len(s.Env) > 0 {
+				return fmt.Errorf("servers[%d] %q: command/args/env are only valid for transport=stdio", i, s.Name)
+			}
+		default:
+			return fmt.Errorf("servers[%d] %q: transport must be stdio or http (got %q)", i, s.Name, s.Transport)
 		}
 	}
 	return nil

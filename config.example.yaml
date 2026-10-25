@@ -173,6 +173,15 @@ servers:
     autostart: false
     enabled: true
 
+  - name: mempalace-http
+    transport: http
+    url: "http://127.0.0.1:9999/mcp"
+    headers:
+      Authorization: "Bearer ${MEMPALACE_TOKEN}"
+    description: "Long-term memory (HTTP backend)"
+    tags: ["memory", "search"]
+    enabled: true
+
 # Reloading
 # ---------
 # Three ways to reload this file in place:

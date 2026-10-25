@@ -36,11 +36,16 @@ type ToolInfo struct {
 	Annotations ToolAnnotations
 }
 
-// Backend is a running backend session.
+// Backend is a running backend session (stdio or http).
 type Backend interface {
+	Ensure(ctx context.Context) error
 	ListTools(ctx context.Context) ([]ToolInfo, error)
 	CallTool(ctx context.Context, name string, args map[string]any) (string, error)
 	Stop()
+	Alive() bool
+	LastToolCall() time.Time
+	LastActivity() time.Time
+	SetNotificationHandler(NotificationHandler)
 }
 
 // Broker manages backends keyed by server name.
@@ -50,7 +55,7 @@ type Broker struct {
 	log    *logx.Logger
 
 	mu   sync.Mutex
-	pool map[string]*backendProcess
+	pool map[string]Backend
 
 	circuitsMu sync.Mutex
 	circuits   map[string]*circuit
@@ -65,7 +70,7 @@ func New(cfg *config.Holder, pol *policy.Policy, log *logx.Logger) *Broker {
 		cfg:      cfg,
 		policy:   pol,
 		log:      log,
-		pool:     make(map[string]*backendProcess),
+		pool:     make(map[string]Backend),
 		circuits: make(map[string]*circuit),
 	}
 }
@@ -86,8 +91,14 @@ func (b *Broker) Ensure(ctx context.Context, serverName string) (Backend, error)
 	b.mu.Lock()
 	proc, exists := b.pool[serverName]
 	if !exists {
-		proc = newBackendProcess(srvcfg, b.log)
-		proc.setNotificationHandler(b.getNotificationHandler())
+		var nb Backend
+		if srvcfg.Transport == "http" {
+			nb = newHTTPBackend(srvcfg, b.log)
+		} else {
+			nb = newProcessBackend(srvcfg, b.log)
+		}
+		nb.SetNotificationHandler(b.getNotificationHandler())
+		proc = nb
 		b.pool[serverName] = proc
 	}
 	b.mu.Unlock()
@@ -324,14 +335,27 @@ func (b *Broker) ApplyConfig(oldCfg, newCfg *config.Config) {
 }
 
 func serverRestartRequired(a, c config.ServerConfig) bool {
-	if a.Command != c.Command {
+	if a.Transport != c.Transport {
 		return true
 	}
-	if !slices.Equal(a.Args, c.Args) {
-		return true
-	}
-	if !maps.Equal(a.Env, c.Env) {
-		return true
+	switch a.Transport {
+	case "stdio":
+		if a.Command != c.Command {
+			return true
+		}
+		if !slices.Equal(a.Args, c.Args) {
+			return true
+		}
+		if !maps.Equal(a.Env, c.Env) {
+			return true
+		}
+	case "http":
+		if a.URL != c.URL {
+			return true
+		}
+		if !maps.Equal(a.Headers, c.Headers) {
+			return true
+		}
 	}
 	return false
 }
@@ -386,7 +410,7 @@ func (b *Broker) reapLoop(ctx context.Context, ttl, tick time.Duration) {
 
 func (b *Broker) reapIdle(ttl time.Duration) {
 	b.mu.Lock()
-	procs := make(map[string]*backendProcess, len(b.pool))
+	procs := make(map[string]Backend, len(b.pool))
 	for name, proc := range b.pool {
 		procs[name] = proc
 	}
@@ -398,10 +422,9 @@ func (b *Broker) reapIdle(ttl time.Duration) {
 		if now.Sub(last) < ttl {
 			continue
 		}
-		if proc.StopIfIdle(ttl) {
-			b.log.Info("reaped idle backend",
-				"server", name,
-				"idle_for", time.Since(last).String())
+		if proc.Alive() {
+			b.log.Info("reaped idle backend", "server", name, "idle_for", time.Since(last).String())
+			proc.Stop()
 		}
 	}
 }
@@ -410,7 +433,7 @@ func (b *Broker) reapIdle(ttl time.Duration) {
 func (b *Broker) StopAll() {
 	b.mu.Lock()
 	procs := b.pool
-	b.pool = make(map[string]*backendProcess)
+	b.pool = make(map[string]Backend)
 	b.mu.Unlock()
 
 	for name, proc := range procs {
@@ -427,13 +450,13 @@ func (b *Broker) SetNotificationHandler(h NotificationHandler) {
 	b.notifMu.Unlock()
 
 	b.mu.Lock()
-	procs := make([]*backendProcess, 0, len(b.pool))
+	procs := make([]Backend, 0, len(b.pool))
 	for _, p := range b.pool {
 		procs = append(procs, p)
 	}
 	b.mu.Unlock()
 	for _, p := range procs {
-		p.setNotificationHandler(h)
+		p.SetNotificationHandler(h)
 	}
 }
 

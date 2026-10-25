@@ -156,10 +156,11 @@ func TestApplyConfig_ReenabledServerStartsLazily(t *testing.T) {
 
 func TestServerRestartRequired(t *testing.T) {
 	base := config.ServerConfig{
-		Name:    "x",
-		Command: "/bin/true",
-		Args:    []string{"a", "b"},
-		Env:     map[string]string{"K": "V"},
+		Name:      "x",
+		Transport: "stdio",
+		Command:   "/bin/true",
+		Args:      []string{"a", "b"},
+		Env:       map[string]string{"K": "V"},
 	}
 
 	tests := []struct {
