@@ -90,15 +90,16 @@ func (s *Server) Run(ctx context.Context, r io.Reader, w io.Writer) error {
 			}
 			var req struct {
 				JSONRPC string          `json:"jsonrpc"`
-				ID      any             `json:"id"`
+				ID      json.RawMessage `json:"id"`
 				Method  string          `json:"method"`
 				Params  json.RawMessage `json:"params"`
 			}
 			if err := json.Unmarshal([]byte(line), &req); err != nil {
 				s.log.Warn("parse error", "line", line)
+				_ = enc.Encode(s.errResp(nil, -32700, "parse error"))
 				continue
 			}
-			s.log.Debug("req", "id", req.ID, "method", req.Method)
+			s.log.Debug("req", "id", string(req.ID), "method", req.Method)
 			sessCtx := session.WithContext(ctx, session.LocalAdmin())
 			resp := s.handle(sessCtx, req.ID, req.Method, req.Params)
 			if resp != nil {
@@ -116,21 +117,24 @@ func (s *Server) Run(ctx context.Context, r io.Reader, w io.Writer) error {
 func (s *Server) Handle(ctx context.Context, raw []byte) (any, error) {
 	var req struct {
 		JSONRPC string          `json:"jsonrpc"`
-		ID      any             `json:"id"`
+		ID      json.RawMessage `json:"id"`
 		Method  string          `json:"method"`
 		Params  json.RawMessage `json:"params"`
 	}
 	if err := json.Unmarshal(raw, &req); err != nil {
-		return nil, fmt.Errorf("parse request: %w", err)
+		return s.errResp(nil, -32700, "parse error"), nil
 	}
 	if req.JSONRPC != "2.0" {
-		return nil, fmt.Errorf("invalid jsonrpc version %q", req.JSONRPC)
+		return s.errResp(req.ID, -32600, "invalid request"), nil
 	}
-	s.log.Debug("req", "id", req.ID, "method", req.Method)
+	if req.Method == "" {
+		return s.errResp(req.ID, -32600, "invalid request"), nil
+	}
+	s.log.Debug("req", "id", string(req.ID), "method", req.Method)
 	return s.handle(ctx, req.ID, req.Method, req.Params), nil
 }
 
-func (s *Server) handle(ctx context.Context, id any, method string, params json.RawMessage) any {
+func (s *Server) handle(ctx context.Context, id json.RawMessage, method string, params json.RawMessage) any {
 	prefix := s.cfg.Get().Proxy.ToolPrefix
 
 	switch method {
@@ -146,10 +150,21 @@ func (s *Server) handle(ctx context.Context, id any, method string, params json.
 				"version": observability.Version,
 			},
 		})
+
+	case "ping":
+		return s.respond(id, map[string]any{})
+
+	case "logging/setLevel":
+		// Accept and ignore. We advertise the logging capability,
+		// but level filtering is not implemented on the proxy side.
+		return s.respond(id, map[string]any{})
+
 	case "notifications/initialized", "notifications/cancelled":
 		return nil // no response for notifications
+
 	case "tools/list":
 		return s.respond(id, map[string]any{"tools": s.toolManifest(prefix)})
+
 	case "tools/call":
 		var p struct {
 			Name      string         `json:"name"`
@@ -169,6 +184,7 @@ func (s *Server) handle(ctx context.Context, id any, method string, params json.
 		return s.respond(id, map[string]any{
 			"content": []map[string]any{{"type": "text", "text": result}},
 		})
+
 	default:
 		return s.errResp(id, -32601, "method not found: "+method)
 	}
@@ -272,11 +288,17 @@ func (s *Server) toolManifest(prefix string) []map[string]any {
 	}
 }
 
-func (s *Server) respond(id any, result any) map[string]any {
+func (s *Server) respond(id json.RawMessage, result any) map[string]any {
+	if len(id) == 0 {
+		id = json.RawMessage("null")
+	}
 	return map[string]any{"jsonrpc": "2.0", "id": id, "result": result}
 }
 
-func (s *Server) errResp(id any, code int, msg string) map[string]any {
+func (s *Server) errResp(id json.RawMessage, code int, msg string) map[string]any {
+	if len(id) == 0 {
+		id = json.RawMessage("null")
+	}
 	return map[string]any{
 		"jsonrpc": "2.0",
 		"id":      id,

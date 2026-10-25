@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -98,6 +99,27 @@ func runOnce(t *testing.T, srv *Server, lines ...string) []map[string]any {
 		records = append(records, rec)
 	}
 	return records
+}
+
+// runOnceRaw is like runOnce but returns the raw JSON response lines,
+// so tests can assert on exact bytes (e.g. large integer IDs).
+func runOnceRaw(t *testing.T, srv *Server, lines ...string) []string {
+	t.Helper()
+	var out bytes.Buffer
+	in := strings.NewReader(strings.Join(lines, "\n") + "\n")
+	if err := srv.Run(context.Background(), in, &out); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var raws []string
+	sc := bufio.NewScanner(&out)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line != "" {
+			raws = append(raws, line)
+		}
+	}
+	return raws
 }
 
 // ---- protocol ----
@@ -334,11 +356,30 @@ func TestRun_SkipsBlankAndInvalidLines(t *testing.T) {
 		`not json at all`,
 		`{"jsonrpc":"2.0","id":42,"method":"initialize"}`,
 	)
-	if len(recs) != 1 {
-		t.Fatalf("expected 1 valid record, got %d", len(recs))
+	// Two responses: one -32700 for the invalid line, one valid
+	// initialize. Blank lines produce nothing.
+	if len(recs) != 2 {
+		t.Fatalf("expected 2 records (parse error + initialize), got %d", len(recs))
 	}
-	if recs[0]["id"] != float64(42) {
-		t.Fatalf("id: %v", recs[0]["id"])
+
+	// First: parse error with null id.
+	errObj, ok := recs[0]["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("first record should be an error: %v", recs[0])
+	}
+	if errObj["code"] != float64(-32700) {
+		t.Fatalf("expected -32700, got %v", errObj["code"])
+	}
+	if recs[0]["id"] != nil {
+		t.Fatalf("parse error should have null id, got %v", recs[0]["id"])
+	}
+
+	// Second: the valid request.
+	if recs[1]["id"] != float64(42) {
+		t.Fatalf("id: %v", recs[1]["id"])
+	}
+	if _, ok := recs[1]["result"]; !ok {
+		t.Fatalf("expected result on second record: %v", recs[1])
 	}
 }
 
@@ -399,5 +440,59 @@ func TestRun_EmptyInput(t *testing.T) {
 	}
 	if out.Len() != 0 {
 		t.Fatalf("expected no output, got %q", out.String())
+	}
+}
+
+func TestRun_Ping(t *testing.T) {
+	srv := testServer(t, "meta", nil)
+	recs := runOnce(t, srv, `{"jsonrpc":"2.0","id":1,"method":"ping"}`)
+	if len(recs) != 1 {
+		t.Fatalf("expected 1 record")
+	}
+	result := recs[0]["result"].(map[string]any)
+	if len(result) != 0 {
+		t.Fatalf("ping should return empty object, got %v", result)
+	}
+}
+
+func TestRun_LoggingSetLevel(t *testing.T) {
+	srv := testServer(t, "meta", nil)
+	recs := runOnce(t, srv, `{"jsonrpc":"2.0","id":1,"method":"logging/setLevel","params":{"level":"debug"}}`)
+	if len(recs) != 1 {
+		t.Fatalf("expected 1 record")
+	}
+	if _, ok := recs[0]["error"]; ok {
+		t.Fatalf("setLevel should not error: %v", recs[0]["error"])
+	}
+}
+
+func TestRun_ParseError(t *testing.T) {
+	srv := testServer(t, "meta", nil)
+	// Отправляем строку, которая не является JSON
+	recs := runOnce(t, srv, `{broken json`)
+	if len(recs) != 1 {
+		t.Fatalf("expected 1 record")
+	}
+	errObj := recs[0]["error"].(map[string]any)
+	if errObj["code"] != float64(-32700) {
+		t.Fatalf("expected -32700, got %v", errObj["code"])
+	}
+	// Для parse error id должен быть null
+	if recs[0]["id"] != nil {
+		t.Fatalf("expected null id, got %v", recs[0]["id"])
+	}
+}
+
+func TestRun_LargeIntegerID(t *testing.T) {
+	srv := testServer(t, "meta", nil)
+	// 2^53 + 1 — число, которое float64 не представляет точно.
+	// Проверяем, что сервер возвращает ID в точности как получил.
+	raws := runOnceRaw(t, srv,
+		`{"jsonrpc":"2.0","id":9007199254740993,"method":"ping"}`)
+	if len(raws) != 1 {
+		t.Fatalf("expected 1 response, got %d", len(raws))
+	}
+	if !strings.Contains(raws[0], `"id":9007199254740993`) {
+		t.Fatalf("large id not preserved exactly: %s", raws[0])
 	}
 }
