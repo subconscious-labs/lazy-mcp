@@ -165,14 +165,6 @@ func (h *Handlers) Call(ctx context.Context, args map[string]any) (string, error
 		return "", err
 	}
 
-	// deny_destructive: reject tools that self-report as destructive,
-	// even if they aren't in the operator's dangerous_tools list.
-	if h.cfg.Get().Proxy.DenyDestructive {
-		if entry, ok := h.cat.Describe(server + "/" + tool); ok && entry.Annotations.DestructiveHint {
-			return "", fmt.Errorf("call: tool %s/%s is destructive and deny_destructive is set", server, tool)
-		}
-	}
-
 	toolArgs := extractArguments(args)
 
 	if limit := h.cfg.Get().Proxy.MaxArgumentsBytes; limit > 0 {
@@ -198,6 +190,19 @@ func (h *Handlers) Call(ctx context.Context, args map[string]any) (string, error
 	if _, ok := h.cat.Describe(ref); !ok {
 		if err := h.cat.RefreshServer(ctx, server); err != nil {
 			h.log.Warn("call: catalog refresh", "server", server, "err", err)
+		}
+	}
+
+	// deny_destructive: reject tools that self-report as destructive.
+	// This check runs AFTER the catalog refresh so a cold call cannot
+	// bypass it. If the catalog is still empty, we fail closed.
+	if h.cfg.Get().Proxy.DenyDestructive {
+		entry, ok := h.cat.Describe(ref)
+		if !ok {
+			return "", fmt.Errorf("call: tool %s not found in catalog; cannot verify destructive hint (deny_destructive is enabled)", ref)
+		}
+		if entry.Annotations.DestructiveHint {
+			return "", fmt.Errorf("call: tool %s/%s is destructive and deny_destructive is set", server, tool)
 		}
 	}
 

@@ -404,6 +404,7 @@ func TestCall_RejectsOversizedArguments(t *testing.T) {
 	h := &Handlers{
 		cfg:    holder,
 		policy: policy.New(holder),
+		log:    logx.New(io.Discard),
 	}
 	big := strings.Repeat("x", 200)
 	_, err := h.Call(context.Background(), map[string]any{
@@ -439,6 +440,7 @@ func TestCall_DenyDestructive(t *testing.T) {
 		cfg:    holder,
 		cat:    cat,
 		policy: pol,
+		log:    logx.New(io.Discard),
 	}
 	_, err := h.Call(context.Background(), map[string]any{
 		"tool_ref":  "server/danger",
@@ -490,6 +492,7 @@ func TestCursor_BoundToUser(t *testing.T) {
 		cfg:    holder,
 		policy: pol,
 		pager:  NewPageStore(time.Minute),
+		log:    logx.New(io.Discard),
 	}
 
 	// Создаём страницу от имени userA
@@ -504,5 +507,36 @@ func TestCursor_BoundToUser(t *testing.T) {
 	_, err = h.callCursorNext(context.Background(), resp.NextCursor, "userB", nil)
 	if err == nil || !strings.Contains(err.Error(), "not found or expired") {
 		t.Fatalf("userB should not be able to use userA's cursor, got: %v", err)
+	}
+}
+
+func TestCall_DenyDestructiveCold(t *testing.T) {
+	holder := config.NewHolder(&config.Config{
+		Proxy: config.ProxyConfig{DenyDestructive: true},
+		Servers: []config.ServerConfig{
+			// /bin/false стартует и сразу умирает, чтобы Ensure вернул ошибку,
+			// а каталог остался пустым (без паники).
+			{Name: "server", Enabled: true, Command: "/bin/false"},
+		},
+	})
+	pol := policy.New(holder)
+	brok := broker.New(holder, pol, logx.New(io.Discard))
+	cat := catalog.New(holder, brok, pol, logx.New(io.Discard))
+
+	h := &Handlers{
+		cfg:    holder,
+		cat:    cat,
+		brok:   brok,
+		policy: pol,
+		log:    logx.New(io.Discard),
+	}
+
+	_, err := h.Call(context.Background(), map[string]any{
+		"tool_ref":  "server/danger",
+		"arguments": map[string]any{},
+	})
+
+	if err == nil || !strings.Contains(err.Error(), "cannot verify destructive hint") {
+		t.Fatalf("expected fail-closed error, got %v", err)
 	}
 }
