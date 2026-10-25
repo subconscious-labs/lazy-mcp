@@ -62,12 +62,22 @@ func (p *Policy) Visible(user, serverName, tool string) bool {
 	return true
 }
 
-// Check reports whether user may call (serverName, tool) now. Applies
-// Visible plus rate limiting keyed by (user, server, tool).
-func (p *Policy) Check(user, serverName, tool string) error {
+// Authorize verifies that user may call (serverName, tool) but does
+// NOT consume a rate-limit token. Use this on the request path where
+// multiple layers check the same call, and in DescribeTool.
+func (p *Policy) Authorize(user, serverName, tool string) error {
 	if !p.Visible(user, serverName, tool) {
 		return fmt.Errorf("policy: tool %s/%s is not permitted for user %q",
 			serverName, tool, user)
+	}
+	return nil
+}
+
+// Check verifies visibility AND consumes a token from the rate-limit
+// bucket. Called exactly once per actual tool execution.
+func (p *Policy) Check(user, serverName, tool string) error {
+	if err := p.Authorize(user, serverName, tool); err != nil {
+		return err
 	}
 	rl := p.cfg.Get().Proxy.RateLimit
 	if !rl.Enabled {

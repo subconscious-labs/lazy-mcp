@@ -223,3 +223,28 @@ func TestCheck_InvalidateResetsBuckets(t *testing.T) {
 		t.Fatalf("after Invalidate: %v", err)
 	}
 }
+
+func TestAuthorize_DoesNotConsume(t *testing.T) {
+	p := newTestPolicy(&config.Config{
+		Proxy: config.ProxyConfig{
+			RateLimit: config.RateLimitConfig{Enabled: true, PerMinute: 60, Burst: 1},
+		},
+		Servers: []config.ServerConfig{{Name: "s", Enabled: true}},
+	})
+
+	// 100 Authorize calls — no tokens consumed.
+	for i := 0; i < 100; i++ {
+		if err := p.Authorize("", "s", "a"); err != nil {
+			t.Fatalf("Authorize %d: %v", i, err)
+		}
+	}
+
+	// One Check consumes the only token.
+	if err := p.Check("", "s", "a"); err != nil {
+		t.Fatalf("first Check: %v", err)
+	}
+	// Second Check hits the limit.
+	if err := p.Check("", "s", "a"); err == nil {
+		t.Fatal("expected rate limit on second Check")
+	}
+}

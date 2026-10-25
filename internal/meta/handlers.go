@@ -161,7 +161,7 @@ func (h *Handlers) Call(ctx context.Context, args map[string]any) (string, error
 	if sess != nil && !sess.CanSeeServer(server) {
 		return "", fmt.Errorf("call: server %q is not permitted for user %q", server, user)
 	}
-	if err := h.policy.Check(user, server, tool); err != nil {
+	if err := h.policy.Authorize(user, server, tool); err != nil {
 		return "", err
 	}
 
@@ -225,7 +225,7 @@ func (h *Handlers) callCursorNext(_ context.Context, cursor, user string, sess *
 	if sess != nil && !sess.CanSeeServer(server) {
 		return "", fmt.Errorf("call: server %q is not permitted for user %q", server, user)
 	}
-	if err := h.policy.Check(user, server, tool); err != nil {
+	if err := h.policy.Authorize(user, server, tool); err != nil {
 		return "", err
 	}
 
@@ -311,10 +311,9 @@ func (h *Handlers) DescribeTool(ctx context.Context, args map[string]any) (strin
 	if sess != nil && !sess.CanSeeServer(server) {
 		return "", fmt.Errorf("describe_tool: server %q is not permitted for user %q", server, user)
 	}
-	if err := h.policy.Check(user, server, tool); err != nil {
+	if err := h.policy.Authorize(user, server, tool); err != nil {
 		return "", err
 	}
-
 	if _, ok := h.cat.Describe(ref); !ok {
 		if err := h.cat.RefreshServer(ctx, server); err != nil {
 			return "", fmt.Errorf("describe_tool: refresh %q: %w", server, err)
