@@ -286,10 +286,13 @@ func (h *Hub) sessionForPrincipal(w http.ResponseWriter, r *http.Request) *sessS
 
 	// Bind session to the authenticated principal.
 	if st.sess.User != u.Name {
-		// Don't leak existence: 404 for someone else's session.
 		http.Error(w, "session not found", http.StatusNotFound)
 		return nil
 	}
+
+	// Refresh session permissions in case the config was reloaded.
+	st.sess.UpdatePermissions(u.Role, u.AllowedServers)
+
 	return st
 }
 

@@ -49,6 +49,9 @@ type backendProcess struct {
 	cfg config.ServerConfig
 	log *logx.Logger
 
+	// generation is incremented on every successful start.
+	generation int
+
 	lifecycleMu sync.Mutex // serializes start/stop
 	mu          sync.Mutex // guards pending, scanErr, ready, proc, lastUsed
 	writeMu     sync.Mutex // guards stdin, enc
@@ -87,7 +90,10 @@ func (p *backendProcess) Ensure(ctx context.Context) error {
 	}
 
 	// dead or never started — clean up any leftovers and start fresh
-	p.kill()
+	p.mu.Lock()
+	gen := p.generation
+	p.mu.Unlock()
+	p.killGenLocked(gen)
 	return p.start(ctx)
 }
 
@@ -120,6 +126,7 @@ func (p *backendProcess) start(ctx context.Context) error {
 	p.pending = make(map[int64]chan *rpcMessage)
 	p.scanErr = nil
 	p.startedAt = time.Now()
+	p.generation++
 	// NOTE: lastToolCall is intentionally NOT touched here — it must
 	// reflect tools/call only, not process starts. Idle-reaper uses
 	// LastActivity() which takes max(lastToolCall, startedAt).
@@ -141,7 +148,7 @@ func (p *backendProcess) start(ctx context.Context) error {
 			"version": "0.1.0",
 		},
 	}); err != nil {
-		p.kill()
+		p.killGenLocked(p.generation)
 		return fmt.Errorf("initialize: %w", err)
 	}
 
@@ -150,7 +157,7 @@ func (p *backendProcess) start(ctx context.Context) error {
 		"method":  "notifications/initialized",
 		"params":  map[string]any{},
 	}); err != nil {
-		p.kill()
+		p.killGenLocked(p.generation)
 		return fmt.Errorf("initialized notification: %w", err)
 	}
 
@@ -223,6 +230,7 @@ func (p *backendProcess) request(ctx context.Context, method string, params any)
 		p.mu.Unlock()
 		return nil, fmt.Errorf("backend dead: %w", err)
 	}
+	gen := p.generation
 	p.pending[id] = ch
 	p.mu.Unlock()
 
@@ -248,7 +256,7 @@ func (p *backendProcess) request(ctx context.Context, method string, params any)
 		}
 	case <-ctx.Done():
 		// Write is blocked. Kill the process to unblock it and clean up.
-		go p.kill()
+		go p.killGen(gen)
 		p.mu.Lock()
 		delete(p.pending, id)
 		p.mu.Unlock()
@@ -381,7 +389,7 @@ func (p *backendProcess) StopIfIdle(ttl time.Duration) bool {
 	}
 	p.mu.Unlock()
 
-	p.kill()
+	p.killGenLocked(p.generation)
 	return true
 }
 
@@ -405,10 +413,23 @@ func (p *backendProcess) LastActivity() time.Time {
 	return p.startedAt
 }
 
-// kill forcibly terminates the process. Safe to call multiple times.
-func (p *backendProcess) kill() {
-	// 1. Detach stdin and proc under a short lock.
+// killGen cleans up a specific generation. It holds lifecycleMu
+// to serialize with Ensure/start. If the generation has already
+// advanced, it does nothing.
+func (p *backendProcess) killGen(gen int) {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+	p.killGenLocked(gen)
+}
+
+// killGenLocked is killGen without acquiring lifecycleMu.
+func (p *backendProcess) killGenLocked(gen int) {
 	p.mu.Lock()
+	if p.generation != gen {
+		p.mu.Unlock()
+		return
+	}
+
 	stdin := p.stdin
 	proc := p.proc
 	p.proc = nil
@@ -423,17 +444,16 @@ func (p *backendProcess) kill() {
 	}
 	p.mu.Unlock()
 
-	// 2. Close stdin first. This unblocks any stuck enc.Encode().
 	if stdin != nil {
 		_ = stdin.Close()
 	}
 
-	// 3. Now safely wait for the writer to finish and release writeMu.
 	p.writeMu.Lock()
-	p.enc = nil
+	if p.generation == gen {
+		p.enc = nil
+	}
 	p.writeMu.Unlock()
 
-	// 4. Kill the OS process.
 	if proc != nil && proc.Process != nil {
 		_ = proc.Process.Kill()
 		_ = proc.Wait()
@@ -444,7 +464,12 @@ func (p *backendProcess) kill() {
 func (p *backendProcess) Stop() {
 	p.lifecycleMu.Lock()
 	defer p.lifecycleMu.Unlock()
-	p.kill()
+
+	p.mu.Lock()
+	gen := p.generation
+	p.mu.Unlock()
+
+	p.killGenLocked(gen)
 	p.log.Info("backend stopped", "server", p.cfg.Name)
 }
 

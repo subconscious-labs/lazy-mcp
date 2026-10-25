@@ -58,8 +58,19 @@ func (s *Session) LastSeen() time.Time {
 // Age returns the time since the session was created.
 func (s *Session) Age() time.Duration { return time.Since(s.createdAt) }
 
-// CanSeeServer reports whether this user is allowed to talk to server.
+// UpdatePermissions replaces the cached role and allowed servers.
+// Called by the hub when a request authenticates to ensure the
+// session reflects the current config.
+func (s *Session) UpdatePermissions(role string, allowed []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Role = role
+	s.AllowedServers = allowed
+}
+
 func (s *Session) CanSeeServer(name string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.Role == "admin" {
 		return true
 	}
