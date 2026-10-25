@@ -339,3 +339,74 @@ func TestSession_BoundToPrincipal(t *testing.T) {
 		t.Fatalf("admin session after attack: got %d, want 200", respC.StatusCode)
 	}
 }
+
+func readSSEData(t *testing.T, r *bufio.Reader) string {
+	t.Helper()
+	for {
+		line, err := r.ReadString('\n')
+		if err != nil {
+			return ""
+		}
+		if strings.HasPrefix(line, "data: ") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "data: "))
+		}
+	}
+}
+
+func TestBroadcast_RespectsACL(t *testing.T) {
+	cfg := basicCfg()
+	// Настраиваем два сервера
+	cfg.Servers = []config.ServerConfig{
+		{Name: "public", Enabled: true},
+		{Name: "secret", Enabled: true},
+	}
+	cfg.Auth = config.AuthConfig{
+		Enabled: true,
+		Users: []config.AuthUserConfig{
+			{Name: "admin", TokenSHA256: tokenHash("admin-tok"), Role: "admin"},
+			{Name: "elsa", TokenSHA256: tokenHash("elsa-tok"), Role: "agent", AllowedServers: []string{"public"}},
+		},
+	}
+	h, ts := newTestHub(t, cfg)
+
+	openSSE := func(token string) (*bufio.Reader, *http.Response) {
+		resp := doMCP(t, ts.URL, token, "", `{"jsonrpc":"2.0","id":1,"method":"initialize"}`)
+		sid := resp.Header.Get("Mcp-Session-Id")
+		resp.Body.Close()
+
+		req, _ := http.NewRequest("GET", ts.URL+"/mcp", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Mcp-Session-Id", sid)
+		req.Header.Set("Accept", "text/event-stream")
+		respSSE, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return bufio.NewReader(respSSE.Body), respSSE
+	}
+
+	rAdmin, respAdmin := openSSE("admin-tok")
+	defer respAdmin.Body.Close()
+	rElsa, respElsa := openSSE("elsa-tok")
+	defer respElsa.Body.Close()
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Отправляем событие от сервера secret
+	h.OnDownstreamNotification("secret", "notifications/message", json.RawMessage(`{"level":"info","data":"secret payload"}`))
+	// Отправляем событие от сервера public
+	h.OnDownstreamNotification("public", "notifications/message", json.RawMessage(`{"level":"info","data":"public payload"}`))
+
+	// Админ должен получить оба (порядок не гарантирован)
+	gotAdmin1 := readSSEData(t, rAdmin)
+	gotAdmin2 := readSSEData(t, rAdmin)
+	if !strings.Contains(gotAdmin1+gotAdmin2, "secret payload") || !strings.Contains(gotAdmin1+gotAdmin2, "public payload") {
+		t.Fatalf("admin should receive both, got: %s | %s", gotAdmin1, gotAdmin2)
+	}
+
+	// Elsa должна получить только public payload (событие от secret для неё отфильтровано)
+	gotElsa := readSSEData(t, rElsa)
+	if !strings.Contains(gotElsa, "public payload") {
+		t.Fatalf("elsa should receive public, got: %s", gotElsa)
+	}
+}

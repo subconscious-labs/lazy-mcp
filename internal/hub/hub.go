@@ -379,19 +379,19 @@ func (h *Hub) OnDownstreamNotification(server, method string, params json.RawMes
 		if len(p.Data) > 0 {
 			payload = p.Data
 		}
-		h.broadcastNotification(p.Level, "event", map[string]any{
+		h.broadcastNotification(p.Level, "event", server, map[string]any{
 			"source":  server,
 			"payload": payload,
 		})
 
 	case "notifications/tools/list_changed":
-		h.broadcastNotification("info", "event", map[string]any{
+		h.broadcastNotification("info", "event", server, map[string]any{
 			"source":  server,
 			"payload": map[string]any{"event": "catalog_changed"},
 		})
 
 	case "notifications/resources/updated":
-		h.broadcastNotification("info", "event", map[string]any{
+		h.broadcastNotification("info", "event", server, map[string]any{
 			"source":  server,
 			"payload": map[string]any{"event": "resource_updated"},
 		})
@@ -404,7 +404,7 @@ func (h *Hub) OnDownstreamNotification(server, method string, params json.RawMes
 // broadcastNotification sends a notifications/message event to all SSE
 // subscribers. `data` may be any JSON-marshalable value (object, string,
 // json.RawMessage); nil becomes JSON null.
-func (h *Hub) broadcastNotification(level, logger string, data any) {
+func (h *Hub) broadcastNotification(level, logger, source string, data any) {
 	msg, err := json.Marshal(map[string]any{
 		"jsonrpc": "2.0",
 		"method":  "notifications/message",
@@ -419,19 +419,23 @@ func (h *Hub) broadcastNotification(level, logger string, data any) {
 		return
 	}
 	h.log.Info("hub: notification", "logger", logger, "bytes", len(msg))
-	h.broadcast(msg)
+	h.broadcast(source, msg)
 }
 
-func (h *Hub) broadcast(msg []byte) {
+func (h *Hub) broadcast(source string, msg []byte) {
 	h.mu.RLock()
 	states := make([]*sessState, 0, len(h.sessions))
 	for _, st := range h.sessions {
+		// Filter out sessions that don't have access to the source server.
+		if source != "" && !st.sess.CanSeeServer(source) {
+			continue
+		}
 		states = append(states, st)
 	}
 	h.mu.RUnlock()
 
 	if len(states) == 0 {
-		h.log.Debug("hub: notification has no SSE subscribers")
+		h.log.Debug("hub: notification has no eligible subscribers", "source", source)
 		return
 	}
 	observability.Default().IncNotificationsSent()
