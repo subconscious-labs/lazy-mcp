@@ -347,6 +347,11 @@ func (c *Config) validate() error {
 	}
 	// Validate server transport configs.
 	for i, s := range c.Servers {
+		if s.Transport == "stdio" || s.Transport == "" {
+			if s.Command == "" {
+				return fmt.Errorf("command is required for transport=stdio")
+			}
+		}
 		switch s.Transport {
 		case "stdio", "":
 			if s.Command == "" {
