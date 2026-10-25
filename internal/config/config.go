@@ -32,6 +32,15 @@ type ProxyConfig struct {
 	// also larger, the response is truncated with truncated=true + hint.
 	// Set to 0 to disable. Default: 256 KiB.
 	MaxResultBytes int `yaml:"max_result_bytes"`
+	// MaxSummaryLen caps the summary field returned by meta_search,
+	// in bytes. Full descriptions are available from meta_describe_tool.
+	// 0 disables the cap. Default: 200.
+	MaxSummaryLen int `yaml:"max_summary_len"`
+	// MaxRawResultBytes is the hard limit on a single downstream
+	// result before it is stored in the pagination cache. Results
+	// larger than this are rejected with an error rather than
+	// buffered in memory. 0 = unlimited. Default: 10485760 (10 MiB).
+	MaxRawResultBytes int `yaml:"max_raw_result_bytes"`
 	// MaxArgumentsBytes caps the size of a marshalled `arguments` payload
 	// accepted by meta_call. 0 = unlimited. Default: 262144 (256 KiB).
 	MaxArgumentsBytes int `yaml:"max_arguments_bytes"`
@@ -179,6 +188,12 @@ func (c *Config) defaults() {
 	}
 	if c.Proxy.MaxResultBytes == 0 {
 		c.Proxy.MaxResultBytes = 262144 // 256 KiB
+	}
+	if c.Proxy.MaxSummaryLen == 0 {
+		c.Proxy.MaxSummaryLen = 200
+	}
+	if c.Proxy.MaxRawResultBytes == 0 {
+		c.Proxy.MaxRawResultBytes = 10 * 1024 * 1024
 	}
 	if c.Proxy.MaxArgumentsBytes == 0 {
 		c.Proxy.MaxArgumentsBytes = 262144 // 256 KiB

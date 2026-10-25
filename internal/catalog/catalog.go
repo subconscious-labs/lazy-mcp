@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/subconscious-labs/lazy-mcp/internal/broker"
 	"github.com/subconscious-labs/lazy-mcp/internal/config"
@@ -21,7 +22,8 @@ type ToolEntry struct {
 	Ref         string
 	Server      string
 	Tool        string
-	Summary     string
+	Summary     string // capped at proxy.max_summary_len
+	Description string // full description (for describe_tool)
 	Tags        []string
 	InputHint   string
 	InputSchema []byte
@@ -129,11 +131,17 @@ func (c *Catalog) RefreshServer(ctx context.Context, serverName string) error {
 			skipped++
 			continue
 		}
+		desc := firstNonEmpty(t.Description, srvcfg.Description)
+		summary := desc
+		if maxLen := c.cfg.Get().Proxy.MaxSummaryLen; maxLen > 0 && len(summary) > maxLen {
+			summary = truncateUTF8(summary, maxLen) + "…"
+		}
 		entry := ToolEntry{
 			Ref:         serverName + "/" + t.Name,
 			Server:      serverName,
 			Tool:        t.Name,
-			Summary:     firstNonEmpty(t.Description, srvcfg.Description),
+			Summary:     summary,
+			Description: desc,
 			Tags:        srvcfg.Tags,
 			InputHint:   extractInputHint(t.InputSchema),
 			InputSchema: t.InputSchema,
@@ -409,4 +417,16 @@ func (c *Catalog) ApplyConfig(cfg *config.Config) {
 	if removed > 0 {
 		c.log.Info("reload: dropped catalog entries", "count", removed)
 	}
+}
+
+// truncateUTF8 caps s to at most limit bytes without splitting a UTF-8 rune.
+func truncateUTF8(s string, limit int) string {
+	if limit <= 0 || len(s) <= limit {
+		return s
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }

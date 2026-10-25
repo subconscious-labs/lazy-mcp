@@ -243,6 +243,11 @@ func (h *Handlers) callCursorNext(_ context.Context, cursor, user string, sess *
 
 // buildResponse applies the max_result_bytes safety net and pagination.
 func (h *Handlers) buildResponse(raw string, pageSize int, user, server, tool string) (string, error) {
+	if maxRaw := h.cfg.Get().Proxy.MaxRawResultBytes; maxRaw > 0 && len(raw) > maxRaw {
+		return "", fmt.Errorf(
+			"call: result too large (%d bytes, limit %d); raise proxy.max_raw_result_bytes to accept larger results",
+			len(raw), maxRaw)
+	}
 	maxBytes := h.cfg.Get().Proxy.MaxResultBytes
 	autoPaged := false
 
@@ -341,6 +346,7 @@ func (h *Handlers) DescribeTool(ctx context.Context, args map[string]any) (strin
 		"server":       server,
 		"tool":         tool,
 		"summary":      entry.Summary,
+		"description":  entry.Description,
 		"tags":         entry.Tags,
 		"input_schema": json.RawMessage(entry.InputSchema),
 		"dangerous":    entry.Dangerous,

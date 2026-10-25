@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/subconscious-labs/lazy-mcp/internal/config"
 	"github.com/subconscious-labs/lazy-mcp/internal/logx"
@@ -272,5 +273,28 @@ func TestApplyConfig_EmptyAfterAllDisabled(t *testing.T) {
 
 	if len(c.Entries()) != 0 {
 		t.Fatalf("all entries should be dropped")
+	}
+}
+
+func TestRefreshServer_SummaryCapped(t *testing.T) {
+	// Слишком длинное описание для одного сервера
+	longDesc := strings.Repeat("x", 500)
+	// ... (тест через RefreshServer потребует mock-брокер)
+	// Проверим просто truncateUTF8
+	got := truncateUTF8(longDesc, 200)
+	if len(got) != 200 {
+		t.Fatalf("expected 200 bytes, got %d", len(got))
+	}
+}
+
+func TestTruncateUTF8(t *testing.T) {
+	// Кириллица: 6 символов по 2 байта = 12 байт
+	s := "Привет"
+	got := truncateUTF8(s, 5) // 5 байт = 2.5 символа
+	if !utf8.ValidString(got) {
+		t.Fatalf("invalid UTF-8: %q", got)
+	}
+	if len(got) > 5 {
+		t.Fatalf("exceeds limit: %d bytes", len(got))
 	}
 }

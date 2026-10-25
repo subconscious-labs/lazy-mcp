@@ -540,3 +540,19 @@ func TestCall_DenyDestructiveCold(t *testing.T) {
 		t.Fatalf("expected fail-closed error, got %v", err)
 	}
 }
+
+func TestBuildResponse_RejectsTooLarge(t *testing.T) {
+	h := &Handlers{
+		cfg: config.NewHolder(&config.Config{
+			Proxy: config.ProxyConfig{
+				MaxRawResultBytes: 100,
+				MaxResultBytes:    4096,
+			},
+		}),
+		pager: NewPageStore(time.Minute),
+	}
+	_, err := h.buildResponse(strings.Repeat("x", 200), 0, "", "srv", "tool")
+	if err == nil || !strings.Contains(err.Error(), "result too large") {
+		t.Fatalf("expected result-too-large error, got %v", err)
+	}
+}
