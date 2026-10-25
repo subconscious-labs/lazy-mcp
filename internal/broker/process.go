@@ -223,23 +223,36 @@ func (p *backendProcess) request(ctx context.Context, method string, params any)
 		p.mu.Unlock()
 		return nil, fmt.Errorf("backend dead: %w", err)
 	}
-	if p.pending == nil {
-		p.mu.Unlock()
-		return nil, fmt.Errorf("backend not started")
-	}
 	p.pending[id] = ch
 	p.mu.Unlock()
 
-	if err := p.write(map[string]any{
+	req := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      id,
 		"method":  method,
 		"params":  params,
-	}); err != nil {
+	}
+
+	writeErr := make(chan error, 1)
+	go func() {
+		writeErr <- p.write(req)
+	}()
+
+	select {
+	case err := <-writeErr:
+		if err != nil {
+			p.mu.Lock()
+			delete(p.pending, id)
+			p.mu.Unlock()
+			return nil, err
+		}
+	case <-ctx.Done():
+		// Write is blocked. Kill the process to unblock it and clean up.
+		go p.kill()
 		p.mu.Lock()
 		delete(p.pending, id)
 		p.mu.Unlock()
-		return nil, err
+		return nil, ctx.Err()
 	}
 
 	select {
@@ -248,9 +261,6 @@ func (p *backendProcess) request(ctx context.Context, method string, params any)
 			return nil, fmt.Errorf("backend closed during request")
 		}
 		if msg.Error != nil {
-			// JSON-RPC client-side error codes: the request itself was
-			// malformed or referred to unknown params. The backend is
-			// healthy; the caller must fix its input.
 			if msg.Error.Code >= -32700 && msg.Error.Code <= -32602 {
 				return nil, fmt.Errorf("%w: code %d: %s",
 					ErrRPCClientError, msg.Error.Code, msg.Error.Message)
@@ -397,17 +407,12 @@ func (p *backendProcess) LastActivity() time.Time {
 
 // kill forcibly terminates the process. Safe to call multiple times.
 func (p *backendProcess) kill() {
-	p.writeMu.Lock()
-	if p.stdin != nil {
-		_ = p.stdin.Close()
-		p.stdin = nil
-	}
-	p.enc = nil
-	p.writeMu.Unlock()
-
+	// 1. Detach stdin and proc under a short lock.
 	p.mu.Lock()
+	stdin := p.stdin
 	proc := p.proc
 	p.proc = nil
+	p.stdin = nil
 	p.ready = false
 	if p.scanErr == nil {
 		p.scanErr = fmt.Errorf("stopped")
@@ -418,6 +423,17 @@ func (p *backendProcess) kill() {
 	}
 	p.mu.Unlock()
 
+	// 2. Close stdin first. This unblocks any stuck enc.Encode().
+	if stdin != nil {
+		_ = stdin.Close()
+	}
+
+	// 3. Now safely wait for the writer to finish and release writeMu.
+	p.writeMu.Lock()
+	p.enc = nil
+	p.writeMu.Unlock()
+
+	// 4. Kill the OS process.
 	if proc != nil && proc.Process != nil {
 		_ = proc.Process.Kill()
 		_ = proc.Wait()

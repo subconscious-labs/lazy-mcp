@@ -229,6 +229,7 @@ func (b *Broker) classify(ctx context.Context, serverName string, err error) {
 	}
 
 	if ctx.Err() != nil {
+		c.releaseProbe()
 		return
 	}
 

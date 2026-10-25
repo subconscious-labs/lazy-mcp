@@ -68,6 +68,17 @@ func main() {
 			})
 
 		case "tools/list":
+			if rpcCode, _ := strconv.Atoi(os.Getenv("MOCK_RPC_ERROR_CODE")); rpcCode != 0 {
+				_ = out.Encode(map[string]any{
+					"jsonrpc": "2.0",
+					"id":      *req.ID,
+					"error": map[string]any{
+						"code":    rpcCode,
+						"message": os.Getenv("MOCK_RPC_ERROR_MSG"),
+					},
+				})
+				continue
+			}
 			list := make([]map[string]any, 0, len(tools))
 			for _, name := range tools {
 				annot := map[string]any{}

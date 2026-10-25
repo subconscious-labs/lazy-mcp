@@ -507,3 +507,35 @@ func TestListTools_AnnotationsPropagate(t *testing.T) {
 		t.Fatalf("plain: unexpected annotations")
 	}
 }
+
+func TestCancelledHalfOpenProbe(t *testing.T) {
+	b := newTestBroker(t, []config.ServerConfig{
+		testServer("mock", map[string]string{
+			"MOCK_RPC_ERROR_CODE": "-32000",
+			"MOCK_RPC_ERROR_MSG":  "boom",
+			"MOCK_CALL_DELAY":     "200ms",
+		}),
+	}, brokerOpts{
+		circuitThreshold: 1,
+		circuitCooldown:  100 * time.Millisecond,
+	})
+
+	// 1. Trip the circuit via ListTools (fast RPC error)
+	_, _ = b.ListTools(context.Background(), "mock")
+	if got := b.CircuitState("mock"); got != "open" {
+		t.Fatalf("setup: want open, got %s", got)
+	}
+
+	// Wait for cooldown
+	time.Sleep(150 * time.Millisecond)
+
+	// 2. Half-open probe via CallTool, cancelled mid-flight
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	_, _ = b.CallTool(ctx, "mock", "t", nil)
+	cancel()
+
+	// 3. Circuit should not be stuck in half-open
+	if got := b.CircuitState("mock"); got == "half-open" {
+		t.Fatalf("circuit stuck in half-open")
+	}
+}

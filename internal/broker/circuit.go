@@ -82,6 +82,18 @@ func (c *circuit) allow() error {
 	return nil
 }
 
+// releaseProbe returns a half-open circuit to open state. Called when
+// the probe was cancelled by the client so the circuit doesn't get
+// stuck with an in-flight probe that never finishes.
+func (c *circuit) releaseProbe() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.state == circuitHalfOpen {
+		c.state = circuitOpen
+		c.openedAt = time.Now()
+	}
+}
+
 func (c *circuit) recordSuccess() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
