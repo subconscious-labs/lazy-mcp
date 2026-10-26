@@ -17,9 +17,10 @@ import (
 )
 
 type httpBackend struct {
-	cfg  config.ServerConfig
-	log  *logx.Logger
-	http *http.Client
+	cfg    config.ServerConfig
+	log    *logx.Logger
+	http   *http.Client
+	maxRaw int
 
 	mu           sync.Mutex
 	sessionID    string
@@ -32,10 +33,11 @@ type httpBackend struct {
 	sseCancel context.CancelFunc
 }
 
-func newHTTPBackend(cfg config.ServerConfig, log *logx.Logger) *httpBackend {
+func newHTTPBackend(cfg config.ServerConfig, maxRaw int, log *logx.Logger) *httpBackend {
 	return &httpBackend{
-		cfg: cfg,
-		log: log,
+		cfg:    cfg,
+		log:    log,
+		maxRaw: maxRaw,
 		http: &http.Client{
 			Timeout: 0, // стрим не должен таймаутиться, таймауты задаются через ctx
 		},
@@ -154,32 +156,46 @@ func (h *httpBackend) request(ctx context.Context, method string, params any) (j
 	}
 	defer res.Body.Close()
 
-	// Если сервер вернул новую сессию, запоминаем её.
 	if sid := res.Header.Get("Mcp-Session-Id"); sid != "" {
 		h.mu.Lock()
 		h.sessionID = sid
 		h.mu.Unlock()
 	}
 
+	// A single response body cannot exceed maxRaw; wrap with a
+	// limit+1 reader so we can detect an oversized response without
+	// buffering the whole thing.
+	limited := io.LimitReader(res.Body, int64(h.maxRaw)+1)
+
 	if res.StatusCode >= 400 {
-		raw, _ := io.ReadAll(res.Body)
+		raw, _ := io.ReadAll(limited)
 		return nil, fmt.Errorf("http %d: %s", res.StatusCode, string(raw))
 	}
 
-	// Читаем ответ. Он может быть как application/json, так и text/event-stream.
 	ct := res.Header.Get("Content-Type")
+	var raw []byte
 	if strings.HasPrefix(ct, "application/json") {
-		return h.parseJSONResponse(res.Body, id)
-	}
-	if strings.HasPrefix(ct, "text/event-stream") {
-		return h.parseSSEResponse(res.Body, id)
+		raw, err = io.ReadAll(limited)
+		if err != nil {
+			return nil, err
+		}
+	} else if strings.HasPrefix(ct, "text/event-stream") {
+		// SSE parser already enforces a per-event limit via
+		// bufio.Scanner; pass through the limited reader.
+		return h.parseSSEResponse(limited, id)
+	} else {
+		raw, _ = io.ReadAll(limited)
+		return nil, fmt.Errorf("unexpected content-type: %s; body: %s", ct, string(raw))
 	}
 
-	raw, _ := io.ReadAll(res.Body)
-	return nil, fmt.Errorf("unexpected content-type: %s; body: %s", ct, string(raw))
+	if len(raw) > h.maxRaw {
+		return nil, fmt.Errorf("response exceeds max_raw_result_bytes (%d)", h.maxRaw)
+	}
+
+	return h.parseJSONBytes(raw, id)
 }
 
-func (h *httpBackend) parseJSONResponse(r io.Reader, id int64) (json.RawMessage, error) {
+func (h *httpBackend) parseJSONBytes(raw []byte, id int64) (json.RawMessage, error) {
 	var resp struct {
 		ID     int64           `json:"id"`
 		Result json.RawMessage `json:"result"`
@@ -188,7 +204,7 @@ func (h *httpBackend) parseJSONResponse(r io.Reader, id int64) (json.RawMessage,
 			Message string `json:"message"`
 		} `json:"error"`
 	}
-	if err := json.NewDecoder(r).Decode(&resp); err != nil {
+	if err := json.Unmarshal(raw, &resp); err != nil {
 		return nil, err
 	}
 	if resp.ID != id {
@@ -202,6 +218,7 @@ func (h *httpBackend) parseJSONResponse(r io.Reader, id int64) (json.RawMessage,
 
 func (h *httpBackend) parseSSEResponse(r io.Reader, id int64) (json.RawMessage, error) {
 	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64*1024), h.maxRaw)
 	for sc.Scan() {
 		line := sc.Text()
 		if !strings.HasPrefix(line, "data: ") {

@@ -186,16 +186,21 @@ func (h *Handlers) Call(ctx context.Context, args map[string]any) (string, error
 
 	h.log.Info("call", "server", server, "tool", tool, "page_size", pageSize, "user", user)
 
+	// Refresh the catalog if the entry is missing OR stale. When
+	// deny_destructive is enabled, a failed refresh is fatal: we cannot
+	// trust stale annotations to say destructive=false.
 	ref := server + "/" + tool
-	if _, ok := h.cat.Describe(ref); !ok {
+	_, found := h.cat.Describe(ref)
+	if !found || h.cat.ServerStale(server) {
 		if err := h.cat.RefreshServer(ctx, server); err != nil {
+			if h.cfg.Get().Proxy.DenyDestructive {
+				return "", fmt.Errorf("call: cannot verify destructive hint for %s: %w", ref, err)
+			}
 			h.log.Warn("call: catalog refresh", "server", server, "err", err)
 		}
 	}
 
 	// deny_destructive: reject tools that self-report as destructive.
-	// This check runs AFTER the catalog refresh so a cold call cannot
-	// bypass it. If the catalog is still empty, we fail closed.
 	if h.cfg.Get().Proxy.DenyDestructive {
 		entry, ok := h.cat.Describe(ref)
 		if !ok {

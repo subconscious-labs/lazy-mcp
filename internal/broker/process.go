@@ -67,8 +67,9 @@ func (r *processRun) markClosed() {
 }
 
 type backendProcess struct {
-	cfg config.ServerConfig
-	log *logx.Logger
+	cfg    config.ServerConfig
+	log    *logx.Logger
+	maxRaw int // hard cap for a single inbound frame
 
 	lifecycleMu sync.Mutex
 	mu          sync.Mutex
@@ -82,8 +83,8 @@ type backendProcess struct {
 	notifHandler NotificationHandler
 }
 
-func newProcessBackend(cfg config.ServerConfig, log *logx.Logger) *backendProcess {
-	return &backendProcess{cfg: cfg, log: log}
+func newProcessBackend(cfg config.ServerConfig, maxRaw int, log *logx.Logger) *backendProcess {
+	return &backendProcess{cfg: cfg, log: log, maxRaw: maxRaw}
 }
 
 func (p *backendProcess) SetNotificationHandler(h NotificationHandler) {
@@ -184,7 +185,13 @@ func (p *backendProcess) start(ctx context.Context) error {
 
 func (p *backendProcess) readLoop(run *processRun, r io.Reader) {
 	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	// The buffer must be able to hold a single frame up to maxRaw.
+	// bufio requires max >= initial, so we start at maxRaw directly.
+	maxFrame := p.maxRaw
+	if maxFrame < 64*1024 {
+		maxFrame = 64 * 1024
+	}
+	sc.Buffer(make([]byte, 0, 64*1024), maxFrame)
 
 	for sc.Scan() {
 		line := sc.Bytes()

@@ -556,3 +556,51 @@ func TestBuildResponse_RejectsTooLarge(t *testing.T) {
 		t.Fatalf("expected result-too-large error, got %v", err)
 	}
 }
+
+func TestCall_DenyDestructive_Stale(t *testing.T) {
+	holder := config.NewHolder(&config.Config{
+		Proxy: config.ProxyConfig{
+			DenyDestructive:   true,
+			ToolCacheTTL:      time.Millisecond,
+			InitializeTimeout: 500 * time.Millisecond,
+			ExecTimeout:       500 * time.Millisecond,
+		},
+		Servers: []config.ServerConfig{
+			// /bin/false стартует и сразу умирает: RefreshServer получит
+			// ошибку от брокера, каталог останется пустым. Gate должен
+			// сработать как fail-closed.
+			{Name: "server", Enabled: true, Command: "/bin/false"},
+		},
+	})
+	pol := policy.New(holder)
+	brok := broker.New(holder, pol, logx.New(io.Discard))
+	cat := catalog.New(holder, brok, pol, logx.New(io.Discard))
+
+	// Инжектим "старую" запись с destructive=false
+	cat.InjectEntries([]catalog.ToolEntry{
+		{
+			Ref:         "server/danger",
+			Server:      "server",
+			Tool:        "danger",
+			Annotations: broker.ToolAnnotations{DestructiveHint: false},
+		},
+	})
+	// Форсируем stale
+	cat.InvalidateServer("server")
+
+	h := &Handlers{
+		cfg:    holder,
+		cat:    cat,
+		brok:   brok,
+		policy: pol,
+		log:    logx.New(io.Discard),
+	}
+
+	_, err := h.Call(context.Background(), map[string]any{
+		"tool_ref":  "server/danger",
+		"arguments": map[string]any{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "cannot verify destructive hint") {
+		t.Fatalf("expected fail-closed on stale entry, got %v", err)
+	}
+}

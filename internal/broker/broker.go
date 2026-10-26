@@ -93,14 +93,19 @@ func (b *Broker) Ensure(ctx context.Context, serverName string) (Backend, error)
 		return nil, fmt.Errorf("broker: server %q is disabled", serverName)
 	}
 
+	maxRaw := cfg.Proxy.MaxRawResultBytes
+	if maxRaw <= 0 {
+		maxRaw = 16 * 1024 * 1024 // sane default if config says unlimited
+	}
+
 	b.mu.Lock()
 	proc, exists := b.pool[serverName]
 	if !exists {
 		var nb Backend
 		if srvcfg.Transport == "http" {
-			nb = newHTTPBackend(srvcfg, b.log)
+			nb = newHTTPBackend(srvcfg, maxRaw, b.log)
 		} else {
-			nb = newProcessBackend(srvcfg, b.log)
+			nb = newProcessBackend(srvcfg, maxRaw, b.log)
 		}
 		nb.SetNotificationHandler(b.getNotificationHandler())
 		proc = nb
