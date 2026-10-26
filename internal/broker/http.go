@@ -22,13 +22,14 @@ type httpBackend struct {
 	http   *http.Client
 	maxRaw int
 
-	mu           sync.Mutex
-	sessionID    string
-	nextID       int64
-	notifHandler NotificationHandler
-	dead         bool
-	lastToolCall time.Time
-	startedAt    time.Time
+	mu                sync.Mutex
+	sessionID         string
+	negotiatedVersion string // set after downstream initialize
+	nextID            int64
+	notifHandler      NotificationHandler
+	dead              bool
+	lastToolCall      time.Time
+	startedAt         time.Time
 
 	sseCancel context.CancelFunc
 }
@@ -100,6 +101,11 @@ func (h *httpBackend) Ensure(ctx context.Context) error {
 	if err := json.Unmarshal(resp, &initRes); err != nil {
 		return fmt.Errorf("decode initialize response: %w", err)
 	}
+	h.mu.Lock()
+	if initRes.ProtocolVersion != "" {
+		h.negotiatedVersion = initRes.ProtocolVersion
+	}
+	h.mu.Unlock()
 
 	// 2. Notifications initialized
 	if err := h.notify(ctx, "notifications/initialized", nil); err != nil {
@@ -147,6 +153,9 @@ func (h *httpBackend) request(ctx context.Context, method string, params any) (j
 	h.mu.Lock()
 	if h.sessionID != "" {
 		req.Header.Set("Mcp-Session-Id", h.sessionID)
+	}
+	if h.negotiatedVersion != "" {
+		req.Header.Set("MCP-Protocol-Version", h.negotiatedVersion)
 	}
 	h.mu.Unlock()
 
@@ -267,6 +276,12 @@ func (h *httpBackend) notify(ctx context.Context, method string, params any) err
 		req.Header.Set("Mcp-Session-Id", h.sessionID)
 	}
 	headers := h.cfg.Headers
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	if h.negotiatedVersion != "" {
+		req.Header.Set("MCP-Protocol-Version", h.negotiatedVersion)
+	}
 	h.mu.Unlock()
 
 	for k, v := range headers {
@@ -377,6 +392,7 @@ func (h *httpBackend) Stop() {
 		// alive (and blocks connection-pool reuse), so always close it.
 		req, _ := http.NewRequest(http.MethodDelete, h.cfg.URL, nil)
 		req.Header.Set("Mcp-Session-Id", h.sessionID)
+		req.Header.Set("MCP-Protocol-Version", h.negotiatedVersion)
 		for k, v := range h.cfg.Headers {
 			req.Header.Set(k, v)
 		}
@@ -433,6 +449,9 @@ func (h *httpBackend) readSSE(ctx context.Context) {
 	h.mu.Lock()
 	if h.sessionID != "" {
 		req.Header.Set("Mcp-Session-Id", h.sessionID)
+	}
+	if h.negotiatedVersion != "" {
+		req.Header.Set("MCP-Protocol-Version", h.negotiatedVersion)
 	}
 	h.mu.Unlock()
 

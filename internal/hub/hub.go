@@ -169,24 +169,12 @@ func (h *Hub) handleMCP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Hub) handlePost(w http.ResponseWriter, r *http.Request) {
-	// If a session ID is provided, validate it first so that a deleted
-	// or stolen session returns 404 rather than a body-parsing error.
-	if r.Header.Get("Mcp-Session-Id") != "" {
-		st := h.sessionForPrincipal(w, r)
-		if st == nil {
-			return
-		}
-		body, err := io.ReadAll(io.LimitReader(r.Body, 8<<20))
-		if err != nil {
-			http.Error(w, "read body", http.StatusBadRequest)
-			return
-		}
-		h.processPost(w, r, st.sess, st, body)
+	if !h.checkProtocolVersion(w, r) {
 		return
 	}
 
-	// No session ID: validate JSON-RPC before creating a session
-	// (saves resources from unauthenticated garbage).
+	sid := r.Header.Get("Mcp-Session-Id")
+
 	body, err := io.ReadAll(io.LimitReader(r.Body, 8<<20))
 	if err != nil {
 		http.Error(w, "read body", http.StatusBadRequest)
@@ -197,19 +185,43 @@ func (h *Hub) handlePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var envelope struct {
-		JSONRPC string `json:"jsonrpc"`
-		Method  string `json:"method"`
-	}
-	if err := json.Unmarshal(body, &envelope); err != nil || envelope.JSONRPC != "2.0" || envelope.Method == "" {
-		http.Error(w, "invalid JSON-RPC envelope", http.StatusBadRequest)
-		return
+	var sess *session.Session
+	var st *sessState
+
+	if sid != "" {
+		// Session ID present: validate it BEFORE looking at the body.
+		// A deleted or foreign session must return 404 regardless of
+		// what the body contains.
+		st = h.sessionForPrincipal(w, r)
+		if st == nil {
+			return
+		}
+		sess = st.sess
+	} else {
+		// No session: only valid requests (not notifications) may
+		// create a new session. Validate the envelope first so an
+		// unauthenticated garbage POST does not allocate one.
+		_, kind, rpcErr := mcp.ParseEnvelope(body)
+		if rpcErr != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      nil,
+				"error":   rpcErr,
+			})
+			return
+		}
+		if kind != mcp.KindRequest {
+			http.Error(w, "Mcp-Session-Id required", http.StatusBadRequest)
+			return
+		}
+		sess, st = h.sessionForPost(w, r)
+		if sess == nil {
+			return
+		}
 	}
 
-	sess, st := h.sessionForPost(w, r)
-	if sess == nil {
-		return
-	}
 	h.processPost(w, r, sess, st, body)
 }
 
@@ -237,6 +249,10 @@ func (h *Hub) processPost(w http.ResponseWriter, r *http.Request, sess *session.
 }
 
 func (h *Hub) handleSSE(w http.ResponseWriter, r *http.Request) {
+	if !h.checkProtocolVersion(w, r) {
+		return
+	}
+
 	st := h.sessionForPrincipal(w, r)
 	if st == nil {
 		return
@@ -279,6 +295,10 @@ func (h *Hub) handleSSE(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Hub) handleDelete(w http.ResponseWriter, r *http.Request) {
+	if !h.checkProtocolVersion(w, r) {
+		return
+	}
+
 	st := h.sessionForPrincipal(w, r)
 	if st == nil {
 		return
@@ -575,4 +595,20 @@ func (h *Hub) RefreshSessionsAfterReload() {
 			"id", st.sess.ID, "user", st.sess.User,
 			"role", newRole, "servers", newAllowed)
 	}
+}
+
+// checkProtocolVersion enforces the MCP-Protocol-Version header on
+// requests that carry a session. If absent, accept (older clients).
+// If present and mismatched, respond 400 per spec.
+func (h *Hub) checkProtocolVersion(w http.ResponseWriter, r *http.Request) bool {
+	v := r.Header.Get("MCP-Protocol-Version")
+	if v == "" {
+		return true
+	}
+	if v == mcp.ProtocolVersion {
+		return true
+	}
+	http.Error(w, fmt.Sprintf("unsupported MCP-Protocol-Version %q (server speaks %s)",
+		v, mcp.ProtocolVersion), http.StatusBadRequest)
+	return false
 }

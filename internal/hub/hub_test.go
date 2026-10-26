@@ -568,3 +568,77 @@ func TestRefreshSessionsAfterReload_ClosesRemovedUser(t *testing.T) {
 		t.Fatal("session for removed user should have been closed")
 	}
 }
+
+func TestHub_RejectsBadEnvelope(t *testing.T) {
+	_, ts := newTestHub(t, basicCfg())
+
+	req, _ := http.NewRequest("POST", ts.URL+"/mcp",
+		strings.NewReader(`{"jsonrpc":"1.0","id":1,"method":"initialize"}`))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad envelope: got %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestHub_RejectsBadProtocolVersion(t *testing.T) {
+	_, ts := newTestHub(t, basicCfg())
+
+	// Create a session first.
+	resp := doMCP(t, ts.URL, "", "", `{"jsonrpc":"2.0","id":1,"method":"initialize"}`)
+	sid := resp.Header.Get("Mcp-Session-Id")
+	resp.Body.Close()
+
+	// Send with wrong protocol version.
+	req, _ := http.NewRequest("POST", ts.URL+"/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`))
+	req.Header.Set("Mcp-Session-Id", sid)
+	req.Header.Set("MCP-Protocol-Version", "1999-01-01")
+	resp2, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad protocol version: got %d, want 400", resp2.StatusCode)
+	}
+}
+
+func TestHub_NotificationWithoutSessionRejected(t *testing.T) {
+	_, ts := newTestHub(t, basicCfg())
+
+	req, _ := http.NewRequest("POST", ts.URL+"/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","method":"notifications/initialized"}`))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("notification without session: got %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestHub_AcceptsMatchingProtocolVersion(t *testing.T) {
+	_, ts := newTestHub(t, basicCfg())
+
+	resp := doMCP(t, ts.URL, "", "", `{"jsonrpc":"2.0","id":1,"method":"initialize"}`)
+	sid := resp.Header.Get("Mcp-Session-Id")
+	resp.Body.Close()
+
+	req, _ := http.NewRequest("POST", ts.URL+"/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`))
+	req.Header.Set("Mcp-Session-Id", sid)
+	req.Header.Set("MCP-Protocol-Version", mcp.ProtocolVersion)
+	resp2, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode == http.StatusBadRequest {
+		t.Fatalf("matching protocol version was rejected")
+	}
+}

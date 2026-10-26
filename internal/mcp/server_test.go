@@ -496,3 +496,25 @@ func TestRun_LargeIntegerID(t *testing.T) {
 		t.Fatalf("large id not preserved exactly: %s", raws[0])
 	}
 }
+
+func TestRun_ToolsCallWithoutID_IsDropped(t *testing.T) {
+	srv := testServer(t, "meta", nil)
+	// tools/call is not a notification; without id it must be dropped
+	// silently (no response, no handler side effects we can observe).
+	recs := runOnce(t, srv, `{"jsonrpc":"2.0","method":"tools/call","params":{"name":"meta_list_servers"}}`)
+	if len(recs) != 0 {
+		t.Fatalf("expected no response, got %d", len(recs))
+	}
+}
+
+func TestRun_InvalidEnvelopeReturnsError(t *testing.T) {
+	srv := testServer(t, "meta", nil)
+	recs := runOnce(t, srv, `{"jsonrpc":"2.0","id":{},"method":"tools/list"}`)
+	if len(recs) != 1 {
+		t.Fatalf("expected 1 response, got %d", len(recs))
+	}
+	errObj := recs[0]["error"].(map[string]any)
+	if errObj["code"] != float64(-32600) {
+		t.Fatalf("expected -32600, got %v", errObj["code"])
+	}
+}

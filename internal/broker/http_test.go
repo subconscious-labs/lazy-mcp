@@ -17,9 +17,10 @@ import (
 )
 
 type mockHTTPMCP struct {
-	tools []string
-	mu    sync.Mutex
-	sess  string
+	tools       []string
+	mu          sync.Mutex
+	sess        string
+	lastVersion string
 }
 
 func (m *mockHTTPMCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -41,6 +42,11 @@ func (m *mockHTTPMCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// POST
+	if r.Header.Get("MCP-Protocol-Version") != "" {
+		m.mu.Lock()
+		m.lastVersion = r.Header.Get("MCP-Protocol-Version")
+		m.mu.Unlock()
+	}
 	var req struct {
 		ID     any    `json:"id"`
 		Method string `json:"method"`
@@ -158,5 +164,30 @@ func TestHTTPBackend_RejectsOversizedResponse(_ *testing.T) {
 		// If the mock is too small, this test is a no-op; we rely on the
 		// production-side LimitReader to be exercised in integration.
 		_ = err
+	}
+}
+
+func TestHTTPBackend_SendsProtocolVersion(t *testing.T) {
+	mock := &mockHTTPMCP{tools: []string{"t1"}}
+	ts := httptest.NewServer(mock)
+	defer ts.Close()
+
+	cfg := config.ServerConfig{
+		Name:      "p",
+		Transport: "http",
+		URL:       ts.URL,
+	}
+	b := newHTTPBackend(cfg, 10*1024*1024, logx.New(io.Discard))
+	defer b.Stop()
+
+	if _, err := b.ListTools(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	mock.mu.Lock()
+	got := mock.lastVersion
+	mock.mu.Unlock()
+	if got != "2025-11-25" {
+		t.Fatalf("protocol version not forwarded: %q", got)
 	}
 }

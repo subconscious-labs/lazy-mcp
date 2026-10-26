@@ -88,20 +88,29 @@ func (s *Server) Run(ctx context.Context, r io.Reader, w io.Writer) error {
 			if line == "" {
 				continue
 			}
-			var req struct {
-				JSONRPC string          `json:"jsonrpc"`
-				ID      json.RawMessage `json:"id"`
-				Method  string          `json:"method"`
-				Params  json.RawMessage `json:"params"`
-			}
-			if err := json.Unmarshal([]byte(line), &req); err != nil {
-				s.log.Warn("parse error", "line", line)
-				_ = enc.Encode(s.errResp(nil, -32700, "parse error"))
+			env, kind, rpcErr := ParseEnvelope([]byte(line))
+			if rpcErr != nil {
+				if err := enc.Encode(errorResponse(nil, rpcErr)); err != nil {
+					return fmt.Errorf("encode error response: %w", err)
+				}
 				continue
 			}
-			s.log.Debug("req", "id", string(req.ID), "method", req.Method)
+			s.log.Debug("req", "id", string(env.ID), "method", env.Method)
 			sessCtx := session.WithContext(ctx, session.LocalAdmin())
-			resp := s.handle(sessCtx, req.ID, req.Method, req.Params)
+
+			switch kind {
+			case KindResponse:
+				continue
+			case KindNotification:
+				if !isNotificationMethod(env.Method) {
+					s.log.Warn("dropping unexpected notification", "method", env.Method)
+					continue
+				}
+				_ = s.handle(sessCtx, nil, env.Method, env.Params)
+				continue
+			}
+
+			resp := s.handle(sessCtx, env.ID, env.Method, env.Params)
 			if resp != nil {
 				if err := enc.Encode(resp); err != nil {
 					return fmt.Errorf("encode response: %w", err)
@@ -111,27 +120,32 @@ func (s *Server) Run(ctx context.Context, r io.Reader, w io.Writer) error {
 	}
 }
 
-// Handle processes a single JSON-RPC request (raw bytes, no trailing
-// newline required) and returns the response object or nil for
-// notifications. Used by the HTTP hub; stdio mode goes through Run.
+// Handle processes a single JSON-RPC message (raw bytes). Returns the
+// response object, or nil for notifications and messages that are
+// silently ignored (responses from the client, unknown notifications).
+// Protocol-level errors are returned as a JSON-RPC error object with
+// null id, not as a Go error.
 func (s *Server) Handle(ctx context.Context, raw []byte) (any, error) {
-	var req struct {
-		JSONRPC string          `json:"jsonrpc"`
-		ID      json.RawMessage `json:"id"`
-		Method  string          `json:"method"`
-		Params  json.RawMessage `json:"params"`
+	env, kind, rpcErr := ParseEnvelope(raw)
+	if rpcErr != nil {
+		return errorResponse(nil, rpcErr), nil
 	}
-	if err := json.Unmarshal(raw, &req); err != nil {
-		return s.errResp(nil, -32700, "parse error"), nil
+
+	switch kind {
+	case KindResponse:
+		s.log.Warn("unexpected response from client", "id", string(env.ID))
+		return nil, nil
+	case KindNotification:
+		if !isNotificationMethod(env.Method) {
+			s.log.Warn("dropping unexpected notification", "method", env.Method)
+			return nil, nil
+		}
+		_ = s.handle(ctx, nil, env.Method, env.Params)
+		return nil, nil
 	}
-	if req.JSONRPC != "2.0" {
-		return s.errResp(req.ID, -32600, "invalid request"), nil
-	}
-	if req.Method == "" {
-		return s.errResp(req.ID, -32600, "invalid request"), nil
-	}
-	s.log.Debug("req", "id", string(req.ID), "method", req.Method)
-	return s.handle(ctx, req.ID, req.Method, req.Params), nil
+
+	s.log.Debug("req", "id", string(env.ID), "method", env.Method)
+	return s.handle(ctx, env.ID, env.Method, env.Params), nil
 }
 
 func (s *Server) handle(ctx context.Context, id json.RawMessage, method string, params json.RawMessage) any {
@@ -303,5 +317,16 @@ func (s *Server) errResp(id json.RawMessage, code int, msg string) map[string]an
 		"jsonrpc": "2.0",
 		"id":      id,
 		"error":   map[string]any{"code": code, "message": msg},
+	}
+}
+
+func errorResponse(id json.RawMessage, rpcErr *RPCError) map[string]any {
+	if len(id) == 0 {
+		id = json.RawMessage("null")
+	}
+	return map[string]any{
+		"jsonrpc": "2.0",
+		"id":      id,
+		"error":   rpcErr,
 	}
 }
