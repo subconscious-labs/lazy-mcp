@@ -501,6 +501,9 @@ func (p *backendProcess) StopIfIdle(ttl time.Duration) bool {
 	run := p.current
 	calls := p.activeCalls
 	last := p.lastToolCall
+	if last.IsZero() {
+		last = p.startedAt
+	}
 	p.mu.Unlock()
 
 	if run == nil || calls > 0 {

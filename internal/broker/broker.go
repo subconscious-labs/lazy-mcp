@@ -42,6 +42,7 @@ type Backend interface {
 	ListTools(ctx context.Context) ([]ToolInfo, error)
 	CallTool(ctx context.Context, name string, args map[string]any) (string, error)
 	Stop()
+	StopIfIdle(ttl time.Duration) bool
 	Alive() bool
 	LastToolCall() time.Time
 	LastActivity() time.Time
@@ -432,15 +433,13 @@ func (b *Broker) reapIdle(ttl time.Duration) {
 	}
 	b.mu.Unlock()
 
-	now := time.Now()
 	for name, proc := range procs {
-		last := proc.LastActivity()
-		if now.Sub(last) < ttl {
-			continue
-		}
-		if proc.Alive() {
-			b.log.Info("reaped idle backend", "server", name, "idle_for", time.Since(last).String())
-			proc.Stop()
+		// StopIfIdle does the atomic check (idle + no in-flight calls)
+		// and the stop under one lock. Doing LastActivity()+Stop() here
+		// separately would race with an active call that started between
+		// the two.
+		if proc.StopIfIdle(ttl) {
+			b.log.Info("reaped idle backend", "server", name)
 		}
 	}
 }

@@ -174,6 +174,7 @@ func (c *Config) defaults() {
 	if c.Proxy.MaxSearchResults == 0 {
 		c.Proxy.MaxSearchResults = 8
 	}
+	// -1 means "disabled" and is preserved; only 0 gets the default.
 	if c.Proxy.IdleTTL == 0 {
 		c.Proxy.IdleTTL = 10 * time.Minute
 	}

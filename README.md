@@ -80,11 +80,11 @@ See [`config.example.yaml`](config.example.yaml).
 | `tool_prefix` | `meta` | Prefix for meta-tool names. |
 | `max_search_results` | `8` | Cap on `meta_search` hits. |
 | `warmup` | `false` | Start all enabled backends at boot. |
-| `idle_ttl` | `10m` | Stop backends idle this long. `0` = never. |
+| `idle_ttl` | `10m` | Stop backends idle this long. `-1` = never. `0` = default to `10m` |
 | `tool_cache_ttl` | `30m` | How long `tools/list` stays cached. |
 | `exec_timeout` | `60s` | Per `tools/call` timeout. |
 | `initialize_timeout` | `10s` | MCP handshake timeout when starting a backend. |
-| `max_result_bytes` | `262144` | Hard cap; larger results paginate. `0` = unlimited. |
+| `max_result_bytes` | `262144` | Hard cap; larger results paginate. `-1` = unlimited. |
 | `max_arguments_bytes` | `262144` | Cap on serialized `arguments`. `-1` = unlimited. |
 | `max_summary_len` | `200` | Cap on summary returned by `meta_search`. Full description is in `meta_describe_tool`. |
 | `max_raw_result_bytes` | `10485760` | Reject raw results larger than this before buffering. `0` = unlimited. |

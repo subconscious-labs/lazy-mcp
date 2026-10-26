@@ -117,6 +117,13 @@ func (ps *PageStore) Next(cursor, expectedUser string) (page, nextCursor string,
 		return "", "", false, "", "", false
 	}
 
+	// Expire before serving. The reaper is a safety net, not the
+	// authority on whether a cursor is still valid.
+	if ps.ttl > 0 && time.Since(pr.createdAt) > ps.ttl {
+		delete(ps.entries, id)
+		return "", "", false, "", "", false
+	}
+
 	// Security check: Do not refresh TTL for unauthorized access.
 	if pr.user != expectedUser {
 		return "", "", false, "", "", false

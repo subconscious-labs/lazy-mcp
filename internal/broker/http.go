@@ -372,20 +372,52 @@ func (h *httpBackend) Stop() {
 		h.sseCancel = nil
 	}
 	if h.sessionID != "" {
-		// Best-effort DELETE
+		// Best-effort DELETE with a short timeout and Body.Close.
+		// A leaked response body keeps the underlying TCP connection
+		// alive (and blocks connection-pool reuse), so always close it.
 		req, _ := http.NewRequest(http.MethodDelete, h.cfg.URL, nil)
 		req.Header.Set("Mcp-Session-Id", h.sessionID)
 		for k, v := range h.cfg.Headers {
 			req.Header.Set(k, v)
 		}
 		go func() {
-			_, _ = h.http.Do(req)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			req = req.WithContext(ctx)
+			res, err := h.http.Do(req)
+			if err != nil {
+				return
+			}
+			_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 1024))
+			_ = res.Body.Close()
 		}()
 	}
 	h.sessionID = ""
 	h.dead = true
 	h.mu.Unlock()
 	h.log.Info("http backend stopped", "server", h.cfg.Name)
+}
+
+func (h *httpBackend) StopIfIdle(ttl time.Duration) bool {
+	h.mu.Lock()
+	if h.dead || h.sessionID == "" {
+		h.mu.Unlock()
+		return false
+	}
+	last := h.lastToolCall
+	if last.IsZero() {
+		last = h.startedAt
+	}
+	idle := time.Since(last)
+	// activeCalls для httpBackend не считаем; SSE не мешает idle,
+	// а в момент вызова StopIfIdle никто извне не держит запрос.
+	h.mu.Unlock()
+
+	if idle < ttl {
+		return false
+	}
+	h.Stop()
+	return true
 }
 
 // readSSE читает фоновый поток нотификаций.

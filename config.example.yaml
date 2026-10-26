@@ -37,7 +37,7 @@ proxy:
   tool_prefix: "meta"
   max_search_results: 8
   warmup: false
-  # Stop backends with no tools/call for this long. 0 = never.
+  # Set to -1 to disable (never stop idle backends).
   idle_ttl: 10m
   # How long to cache tools/list from a backend.
   tool_cache_ttl: 30m
@@ -47,6 +47,7 @@ proxy:
   initialize_timeout: 10s
 
   # Hard cap on paginated result size.
+  # Set to -1 to disable (accept any result size, not recommended).
   max_result_bytes: 262144
   # Cap on serialized arguments payload.
   max_arguments_bytes: 262144
