@@ -494,7 +494,15 @@ func (h *Hub) broadcast(source string, msg []byte) {
 	h.mu.RUnlock()
 
 	if len(states) == 0 {
-		h.log.Debug("hub: notification has no eligible subscribers", "source", source)
+		h.mu.RLock()
+		total := len(h.sessions)
+		h.mu.RUnlock()
+		if total == 0 {
+			h.log.Debug("hub: notification dropped: no active sessions", "source", source)
+		} else {
+			h.log.Warn("hub: notification dropped: no session allowed for source",
+				"source", source, "sessions_total", total)
+		}
 		return
 	}
 	observability.Default().IncNotificationsSent()
