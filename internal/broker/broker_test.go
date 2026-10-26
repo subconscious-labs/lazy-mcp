@@ -174,10 +174,7 @@ func TestEnsure_RestartsAfterDeath(t *testing.T) {
 	b.mu.Lock()
 	proc := b.pool["mock"].(*backendProcess)
 	b.mu.Unlock()
-	proc.mu.Lock()
-	gen := proc.generation
-	proc.mu.Unlock()
-	proc.killGen(gen)
+	proc.Stop()
 
 	// Wait for readLoop to notice EOF and mark not ready.
 	time.Sleep(50 * time.Millisecond)

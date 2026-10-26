@@ -20,14 +20,7 @@ import (
 	"github.com/subconscious-labs/lazy-mcp/internal/observability"
 )
 
-// ErrToolError indicates the tool itself returned isError:true.
-// The backend is healthy — this is a business-level result, not a
-// transport failure.
 var ErrToolError = errors.New("tool returned error")
-
-// ErrRPCClientError indicates the backend rejected the request itself
-// (parse error, invalid params, unknown method). The backend is healthy;
-// this is a caller-side mistake, not a transport failure.
 var ErrRPCClientError = errors.New("rpc client error")
 
 type rpcMessage struct {
@@ -42,69 +35,87 @@ type rpcMessage struct {
 	} `json:"error,omitempty"`
 }
 
-// NotificationHandler receives MCP server→client notifications from a
-// downstream backend. method is e.g. "notifications/message".
 type NotificationHandler func(server, method string, params json.RawMessage)
+
+// processRun holds the per-generation state of one started subprocess.
+type processRun struct {
+	gen     int
+	proc    *exec.Cmd
+	stdin   io.WriteCloser
+	enc     *json.Encoder
+	writeMu sync.Mutex
+
+	mu      sync.Mutex
+	pending map[int64]chan *rpcMessage
+	ready   bool
+	scanErr error
+	closed  bool
+}
+
+func (r *processRun) markClosed() {
+	r.mu.Lock()
+	r.closed = true
+	r.ready = false
+	if r.scanErr == nil {
+		r.scanErr = fmt.Errorf("run closed")
+	}
+	for id, ch := range r.pending {
+		delete(r.pending, id)
+		close(ch)
+	}
+	r.mu.Unlock()
+}
 
 type backendProcess struct {
 	cfg config.ServerConfig
 	log *logx.Logger
 
-	// generation is incremented on every successful start.
-	generation int
+	lifecycleMu sync.Mutex
+	mu          sync.Mutex
+	current     *processRun
+	genCounter  atomic.Int64
 
-	lifecycleMu sync.Mutex // serializes start/stop
-	mu          sync.Mutex // guards pending, scanErr, ready, proc, lastUsed
-	writeMu     sync.Mutex // guards stdin, enc
-
-	proc  *exec.Cmd
-	stdin io.WriteCloser
-	enc   *json.Encoder
-
-	pending     map[int64]chan *rpcMessage
-	scanErr     error
-	ready       bool
-	activeCalls int
-
-	nextID atomic.Int64
-
+	nextID       atomic.Int64
 	lastToolCall time.Time
 	startedAt    time.Time
-
-	notifHandler NotificationHandler // guarded by mu
+	activeCalls  int
+	notifHandler NotificationHandler
 }
 
 func newProcessBackend(cfg config.ServerConfig, log *logx.Logger) *backendProcess {
 	return &backendProcess{cfg: cfg, log: log}
 }
 
-// Ensure starts the process if it's not running, or restarts it if it died.
-// Safe to call concurrently; serialized by lifecycleMu.
+func (p *backendProcess) SetNotificationHandler(h NotificationHandler) {
+	p.mu.Lock()
+	p.notifHandler = h
+	p.mu.Unlock()
+}
+
 func (p *backendProcess) Ensure(ctx context.Context) error {
 	p.lifecycleMu.Lock()
 	defer p.lifecycleMu.Unlock()
 
 	p.mu.Lock()
-	alive := p.ready && p.scanErr == nil
+	run := p.current
 	p.mu.Unlock()
-	if alive {
-		return nil
-	}
 
-	// dead or never started — clean up any leftovers and start fresh
-	p.mu.Lock()
-	gen := p.generation
-	p.mu.Unlock()
-	p.killGenLocked(gen)
+	if run != nil {
+		run.mu.Lock()
+		alive := run.ready && run.scanErr == nil
+		run.mu.Unlock()
+		if alive {
+			return nil
+		}
+		p.killGenLocked(run.gen)
+	}
 	return p.start(ctx)
 }
 
 func (p *backendProcess) start(ctx context.Context) error {
 	cmd := exec.Command(p.cfg.Command, p.cfg.Args...)
 	cmd.Env = buildEnv(p.cfg)
-	cmd.Stderr = os.Stderr // backend stderr flows through
-	// Put the child in its own process group so that killing the group
-	// also stops shell wrappers and their children.
+	cmd.Stderr = os.Stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	stdin, err := cmd.StdinPipe()
@@ -119,91 +130,85 @@ func (p *backendProcess) start(ctx context.Context) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("exec %q: %w", p.cfg.Command, err)
 	}
+
 	observability.IncBackendStart(p.cfg.Name)
 
-	p.writeMu.Lock()
-	p.stdin = stdin
-	p.enc = json.NewEncoder(stdin)
-	p.writeMu.Unlock()
+	gen := int(p.genCounter.Add(1))
+	run := &processRun{
+		gen:     gen,
+		proc:    cmd,
+		stdin:   stdin,
+		enc:     json.NewEncoder(stdin),
+		pending: make(map[int64]chan *rpcMessage),
+	}
 
 	p.mu.Lock()
-	p.proc = cmd
-	p.pending = make(map[int64]chan *rpcMessage)
-	p.scanErr = nil
-	p.startedAt = time.Now()
-	p.generation++
+	p.current = run
 	// NOTE: lastToolCall is intentionally NOT touched here — it must
-	// reflect tools/call only, not process starts. Idle-reaper uses
-	// LastActivity() which takes max(lastToolCall, startedAt).
+	// reflect tools/call only, not process starts.
+	p.startedAt = time.Now()
 	p.mu.Unlock()
 
-	p.log.Info("backend started", "server", p.cfg.Name, "pid", cmd.Process.Pid)
+	p.log.Info("backend started", "server", p.cfg.Name, "pid", cmd.Process.Pid, "gen", gen)
 
-	// Single reader goroutine demuxes responses by id.
-	go p.readLoop(stdout)
+	go p.readLoop(run, stdout)
 
-	// MCP initialize handshake. The caller (Broker.Ensure) bounds ctx with
-	// proxy.initialize_timeout; we do not impose our own limit here so the
-	// timeout is uniform across the whole startup path.
-	if _, err := p.request(ctx, "initialize", map[string]any{
+	initCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	if _, err := p.requestRun(initCtx, run, "initialize", map[string]any{
 		"protocolVersion": "2024-11-05",
 		"capabilities":    map[string]any{},
-		"clientInfo": map[string]any{
-			"name":    "lazy-mcp",
-			"version": "0.1.0",
-		},
+		"clientInfo":      map[string]any{"name": "lazy-mcp", "version": "0.1.0"},
 	}); err != nil {
-		p.killGenLocked(p.generation)
+		p.killGenLocked(gen)
 		return fmt.Errorf("initialize: %w", err)
 	}
 
-	if err := p.write(map[string]any{
+	if err := p.writeRun(run, map[string]any{
 		"jsonrpc": "2.0",
 		"method":  "notifications/initialized",
 		"params":  map[string]any{},
 	}); err != nil {
-		p.killGenLocked(p.generation)
+		p.killGenLocked(gen)
 		return fmt.Errorf("initialized notification: %w", err)
 	}
 
-	p.mu.Lock()
-	p.ready = true
-	p.mu.Unlock()
+	run.mu.Lock()
+	run.ready = true
+	run.mu.Unlock()
 
-	p.log.Info("backend ready", "server", p.cfg.Name)
+	p.log.Info("backend ready", "server", p.cfg.Name, "gen", gen)
 	return nil
 }
 
-// readLoop reads JSON-RPC frames from stdout and dispatches them to waiters.
-func (p *backendProcess) readLoop(r io.Reader) {
+func (p *backendProcess) readLoop(run *processRun, r io.Reader) {
 	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024) // tolerate large schemas
+	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 
 	for sc.Scan() {
 		line := sc.Bytes()
 		if len(line) == 0 {
 			continue
 		}
-
 		var msg rpcMessage
 		if err := json.Unmarshal(line, &msg); err != nil {
-			continue // skip non-JSON / debug lines
+			continue
 		}
 		if msg.ID == nil {
 			if msg.Method != "" {
 				p.dispatchNotification(msg.Method, msg.Params)
 			}
-			continue // notification: no waiter
+			continue
 		}
-		p.mu.Lock()
-		ch, ok := p.pending[*msg.ID]
+		run.mu.Lock()
+		ch, ok := run.pending[*msg.ID]
 		if ok {
-			delete(p.pending, *msg.ID)
+			delete(run.pending, *msg.ID)
 		}
-		p.mu.Unlock()
-
+		run.mu.Unlock()
 		if ok {
-			ch <- &msg // buffered (cap 1), never blocks
+			ch <- &msg
 		}
 	}
 
@@ -211,35 +216,64 @@ func (p *backendProcess) readLoop(r io.Reader) {
 	if err == nil {
 		err = io.EOF
 	}
+	p.log.Warn("backend stream closed", "server", p.cfg.Name, "gen", run.gen, "err", err)
 
-	p.mu.Lock()
-	p.scanErr = err
-	p.ready = false
-	for id, ch := range p.pending {
-		delete(p.pending, id)
+	run.mu.Lock()
+	run.scanErr = err
+	run.ready = false
+	for id, ch := range run.pending {
+		delete(run.pending, id)
 		close(ch)
 	}
-	p.mu.Unlock()
-
-	p.log.Warn("backend stream closed", "server", p.cfg.Name, "err", err)
+	run.mu.Unlock()
 }
 
-// request sends a JSON-RPC request and waits for the matching response or ctx.
+func (p *backendProcess) dispatchNotification(method string, params json.RawMessage) {
+	p.mu.Lock()
+	h := p.notifHandler
+	p.mu.Unlock()
+	if h == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			p.log.Warn("notification handler panic",
+				"server", p.cfg.Name, "method", method, "recover", r)
+		}
+	}()
+	h(p.cfg.Name, method, params)
+}
+
 func (p *backendProcess) request(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	p.mu.Lock()
+	run := p.current
+	p.mu.Unlock()
+	if run == nil {
+		return nil, fmt.Errorf("backend not started")
+	}
+	return p.requestRun(ctx, run, method, params)
+}
+
+func (p *backendProcess) requestRun(ctx context.Context, run *processRun, method string, params any) (json.RawMessage, error) {
 	id := p.nextID.Add(1)
 	ch := make(chan *rpcMessage, 1)
 
-	p.mu.Lock()
-	if p.scanErr != nil {
-		err := p.scanErr
-		p.mu.Unlock()
+	run.mu.Lock()
+	if run.scanErr != nil {
+		err := run.scanErr
+		run.mu.Unlock()
 		return nil, fmt.Errorf("backend dead: %w", err)
 	}
-	p.pending[id] = ch
-	p.activeCalls++
-	gen := p.generation
-	p.mu.Unlock()
+	if run.closed {
+		run.mu.Unlock()
+		return nil, fmt.Errorf("run closed")
+	}
+	run.pending[id] = ch
+	run.mu.Unlock()
 
+	p.mu.Lock()
+	p.activeCalls++
+	p.mu.Unlock()
 	defer func() {
 		p.mu.Lock()
 		p.activeCalls--
@@ -254,24 +288,21 @@ func (p *backendProcess) request(ctx context.Context, method string, params any)
 	}
 
 	writeErr := make(chan error, 1)
-	go func() {
-		writeErr <- p.write(req)
-	}()
+	go func() { writeErr <- p.writeRun(run, req) }()
 
 	select {
 	case err := <-writeErr:
 		if err != nil {
-			p.mu.Lock()
-			delete(p.pending, id)
-			p.mu.Unlock()
+			run.mu.Lock()
+			delete(run.pending, id)
+			run.mu.Unlock()
 			return nil, err
 		}
 	case <-ctx.Done():
-		// Write is blocked. Kill the process to unblock it and clean up.
-		go p.killGen(gen)
-		p.mu.Lock()
-		delete(p.pending, id)
-		p.mu.Unlock()
+		go p.killGen(run.gen)
+		run.mu.Lock()
+		delete(run.pending, id)
+		run.mu.Unlock()
 		return nil, ctx.Err()
 	}
 
@@ -289,34 +320,46 @@ func (p *backendProcess) request(ctx context.Context, method string, params any)
 		}
 		return msg.Result, nil
 	case <-ctx.Done():
-		p.mu.Lock()
-		delete(p.pending, id)
-		p.mu.Unlock()
+		run.mu.Lock()
+		delete(run.pending, id)
+		run.mu.Unlock()
 		return nil, ctx.Err()
 	}
 }
 
-func (p *backendProcess) write(v any) error {
-	p.writeMu.Lock()
-	defer p.writeMu.Unlock()
-	if p.enc == nil {
-		return fmt.Errorf("backend not started")
+// writeRun writes a JSON-RPC message to a specific run. It is safe to
+// call on a run that gets closed concurrently: after close it returns
+// an error instead of touching a different run's encoder.
+func (p *backendProcess) writeRun(run *processRun, v any) error {
+	run.mu.Lock()
+	if run.closed {
+		run.mu.Unlock()
+		return fmt.Errorf("run closed")
 	}
-	return p.enc.Encode(v)
+	run.mu.Unlock()
+
+	run.writeMu.Lock()
+	defer run.writeMu.Unlock()
+
+	run.mu.Lock()
+	if run.closed || run.enc == nil {
+		run.mu.Unlock()
+		return fmt.Errorf("run closed")
+	}
+	run.mu.Unlock()
+
+	return run.enc.Encode(v)
 }
 
-// ListTools calls tools/list on the backend.
 func (p *backendProcess) ListTools(ctx context.Context) ([]ToolInfo, error) {
-	var allTools []ToolInfo
+	var all []ToolInfo
 	cursor := ""
-	seenCursors := make(map[string]bool)
-
+	seen := make(map[string]bool)
 	for {
 		params := map[string]any{}
 		if cursor != "" {
 			params["cursor"] = cursor
 		}
-
 		res, err := p.request(ctx, "tools/list", params)
 		if err != nil {
 			return nil, err
@@ -328,41 +371,35 @@ func (p *backendProcess) ListTools(ctx context.Context) ([]ToolInfo, error) {
 			InputSchema json.RawMessage `json:"inputSchema"`
 			Annotations ToolAnnotations `json:"annotations,omitempty"`
 		}
-		type listResult struct {
+		var lr struct {
 			Tools      []rawTool `json:"tools"`
 			NextCursor string    `json:"nextCursor,omitempty"`
 		}
-		var lr listResult
 		if err := json.Unmarshal(res, &lr); err != nil {
 			return nil, fmt.Errorf("parse tools/list: %w", err)
 		}
-
 		for _, t := range lr.Tools {
-			allTools = append(allTools, ToolInfo(t))
+			all = append(all, ToolInfo(t))
 		}
-
 		if lr.NextCursor == "" {
-			break // конец пагинации
+			break
 		}
-
-		// Защита от бесконечного цикла, если сервер зациклит курсор
-		if seenCursors[lr.NextCursor] {
-			p.log.Warn("tools/list returned duplicate cursor, stopping pagination",
+		if seen[lr.NextCursor] {
+			p.log.Warn("tools/list duplicate cursor, stopping",
 				"server", p.cfg.Name, "cursor", lr.NextCursor)
 			break
 		}
-		seenCursors[lr.NextCursor] = true
+		seen[lr.NextCursor] = true
 		cursor = lr.NextCursor
 	}
-
-	return allTools, nil
+	return all, nil
 }
 
-// CallTool calls tools/call on the backend.
 func (p *backendProcess) CallTool(ctx context.Context, name string, args map[string]any) (string, error) {
 	p.mu.Lock()
 	p.lastToolCall = time.Now()
 	p.mu.Unlock()
+
 	res, err := p.request(ctx, "tools/call", map[string]any{
 		"name":      name,
 		"arguments": args,
@@ -385,7 +422,7 @@ func (p *backendProcess) CallTool(ctx context.Context, name string, args map[str
 	}
 	var cr callResult
 	if err := json.Unmarshal(res, &cr); err != nil {
-		return "", fmt.Errorf("parse tools/call result: %w", err)
+		return "", fmt.Errorf("parse tools/call: %w", err)
 	}
 
 	if cr.IsError {
@@ -398,15 +435,10 @@ func (p *backendProcess) CallTool(ctx context.Context, name string, args map[str
 		return "", fmt.Errorf("%w: %s", ErrToolError, strings.Join(parts, "\n"))
 	}
 
-	// If the server provided structured content, prefer it: it is
-	// machine-readable and preserves the full MCP result shape.
 	if len(cr.StructuredContent) > 0 && string(cr.StructuredContent) != "null" {
 		return string(cr.StructuredContent), nil
 	}
 
-	// Otherwise, join text blocks. Non-text blocks (image, audio,
-	// resource) are reported explicitly so the caller knows data is
-	// missing rather than receiving a silently truncated result.
 	var parts []string
 	var nonText []string
 	for _, c := range cr.Content {
@@ -424,51 +456,27 @@ func (p *backendProcess) CallTool(ctx context.Context, name string, args map[str
 	if len(nonText) > 0 {
 		parts = append(parts, nonText...)
 	}
-	result := strings.Join(parts, "\n")
-	return result, nil
+	return strings.Join(parts, "\n"), nil
 }
 
-// Alive reports whether the backend is currently healthy.
 func (p *backendProcess) Alive() bool {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.ready && p.scanErr == nil
-}
-
-// StopIfIdle stops the backend if it hasn't been used for at least ttl.
-// Returns true if the backend was stopped. ttl <= 0 is a no-op.
-func (p *backendProcess) StopIfIdle(ttl time.Duration) bool {
-	p.lifecycleMu.Lock()
-	defer p.lifecycleMu.Unlock()
-
-	p.mu.Lock()
-	// Если есть незавершенные вызовы, процесс не считается idle.
-	if !p.ready || p.scanErr != nil || p.activeCalls > 0 {
-		p.mu.Unlock()
-		return false
-	}
-	idle := time.Since(p.lastToolCall)
-	if idle < ttl {
-		p.mu.Unlock()
-		return false
-	}
+	run := p.current
 	p.mu.Unlock()
-
-	p.killGenLocked(p.generation)
-	return true
+	if run == nil {
+		return false
+	}
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	return run.ready && run.scanErr == nil
 }
 
-// LastToolCall returns the time of the last tools/call sent to this backend.
-// Catalog refreshes (tools/list) do NOT count.
 func (p *backendProcess) LastToolCall() time.Time {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.lastToolCall
 }
 
-// LastActivity returns the most recent of startedAt and lastToolCall.
-// A freshly-started process that has never been called counts as active
-// since startedAt, so the reaper does not kill it immediately.
 func (p *backendProcess) LastActivity() time.Time {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -478,102 +486,88 @@ func (p *backendProcess) LastActivity() time.Time {
 	return p.startedAt
 }
 
-// killGen cleans up a specific generation. It holds lifecycleMu
-// to serialize with Ensure/start. If the generation has already
-// advanced, it does nothing.
+func (p *backendProcess) StopIfIdle(ttl time.Duration) bool {
+	p.lifecycleMu.Lock()
+	defer p.lifecycleMu.Unlock()
+
+	p.mu.Lock()
+	run := p.current
+	calls := p.activeCalls
+	last := p.lastToolCall
+	p.mu.Unlock()
+
+	if run == nil || calls > 0 {
+		return false
+	}
+	run.mu.Lock()
+	alive := run.ready && run.scanErr == nil
+	run.mu.Unlock()
+	if !alive {
+		return false
+	}
+	if time.Since(last) < ttl {
+		return false
+	}
+	p.killGenLocked(run.gen)
+	return true
+}
+
 func (p *backendProcess) killGen(gen int) {
 	p.lifecycleMu.Lock()
 	defer p.lifecycleMu.Unlock()
 	p.killGenLocked(gen)
 }
 
-// killGenLocked is killGen without acquiring lifecycleMu.
 func (p *backendProcess) killGenLocked(gen int) {
 	p.mu.Lock()
-	if p.generation != gen {
+	run := p.current
+	if run == nil || run.gen != gen {
 		p.mu.Unlock()
 		return
 	}
-
-	stdin := p.stdin
-	proc := p.proc
-	p.proc = nil
-	p.stdin = nil
-	p.ready = false
-	if p.scanErr == nil {
-		p.scanErr = fmt.Errorf("stopped")
-	}
-	for id, ch := range p.pending {
-		delete(p.pending, id)
-		close(ch)
-	}
+	p.current = nil
 	p.mu.Unlock()
 
-	if stdin != nil {
-		_ = stdin.Close()
+	run.markClosed()
+
+	// Close stdin to unblock any pending Encode.
+	if run.stdin != nil {
+		_ = run.stdin.Close()
 	}
 
-	p.writeMu.Lock()
-	if p.generation == gen {
-		p.enc = nil
-	}
-	p.writeMu.Unlock()
+	if run.proc != nil && run.proc.Process != nil {
+		pid := run.proc.Process.Pid
+		_ = syscall.Kill(-pid, syscall.SIGTERM)
 
-	if proc != nil && proc.Process != nil {
-		// Negative PID sends the signal to the whole process group.
-		if err := syscall.Kill(-proc.Process.Pid, syscall.SIGTERM); err != nil {
-			// Fallback: kill just the process if the group doesn't exist.
-			_ = proc.Process.Kill()
-		}
-
-		// Give the process a short window to exit gracefully, then force-kill.
 		done := make(chan struct{})
 		go func() {
-			_ = proc.Wait()
+			_ = run.proc.Wait()
 			close(done)
 		}()
 		select {
 		case <-done:
+			// Leader exited; also SIGKILL the group in case children
+			// stayed behind (no-op if empty).
+			_ = syscall.Kill(-pid, syscall.SIGKILL)
 		case <-time.After(2 * time.Second):
-			_ = syscall.Kill(-proc.Process.Pid, syscall.SIGKILL)
+			_ = syscall.Kill(-pid, syscall.SIGKILL)
 			<-done
 		}
 	}
 }
 
-// Stop terminates the backend.
 func (p *backendProcess) Stop() {
 	p.lifecycleMu.Lock()
 	defer p.lifecycleMu.Unlock()
 
 	p.mu.Lock()
-	gen := p.generation
+	run := p.current
 	p.mu.Unlock()
-
-	p.killGenLocked(gen)
-	p.log.Info("backend stopped", "server", p.cfg.Name)
-}
-
-func (p *backendProcess) SetNotificationHandler(h NotificationHandler) {
-	p.mu.Lock()
-	p.notifHandler = h
-	p.mu.Unlock()
-}
-
-func (p *backendProcess) dispatchNotification(method string, params json.RawMessage) {
-	p.mu.Lock()
-	h := p.notifHandler
-	p.mu.Unlock()
-	if h == nil {
+	if run == nil {
 		return
 	}
-	defer func() {
-		if r := recover(); r != nil {
-			p.log.Warn("notification handler panic",
-				"server", p.cfg.Name, "method", method, "recover", r)
-		}
-	}()
-	h(p.cfg.Name, method, params)
+	p.killGenLocked(run.gen)
+	p.log.Info("backend stopped", "server", p.cfg.Name)
 }
 
 func buildEnv(cfg config.ServerConfig) []string {
