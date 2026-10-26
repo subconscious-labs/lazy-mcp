@@ -370,7 +370,7 @@ func (h *Handlers) ListServers(ctx context.Context, args map[string]any) (string
 	}
 
 	_, sess := sessionUser(ctx)
-	if sess != nil && sess.Role != "admin" {
+	if sess != nil && sess.Role() != "admin" {
 		// Allocate a new slice to avoid mutating the shared config.
 		var kept []config.ServerConfig
 		for _, s := range servers {
@@ -438,8 +438,8 @@ func (h *Handlers) WhoAmI(ctx context.Context, _ map[string]any) (string, error)
 		"user": user,
 	}
 	if sess != nil {
-		out["role"] = sess.Role
-		out["allowed_servers"] = sess.AllowedServers
+		out["role"] = sess.Role()
+		out["allowed_servers"] = sess.AllowedServers()
 		out["session_id"] = sess.ID
 	} else {
 		out["role"] = "admin"

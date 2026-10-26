@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 )
@@ -41,4 +42,36 @@ func TestSession_Touch(t *testing.T) {
 	if !s.LastSeen().After(t0) {
 		t.Fatalf("Touch should update lastSeen")
 	}
+}
+
+func TestSession_UpdatePermissions_Concurrent(_ *testing.T) {
+	s := New("x", "u", "agent", []string{"a"})
+	var wg sync.WaitGroup
+
+	// Writer: flip permissions many times.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 1000; i++ {
+			if i%2 == 0 {
+				s.UpdatePermissions("agent", []string{"a"})
+			} else {
+				s.UpdatePermissions("admin", nil)
+			}
+		}
+	}()
+
+	// Readers: call getters and CanSeeServer concurrently.
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 1000; j++ {
+				_ = s.Role()
+				_ = s.AllowedServers()
+				_ = s.CanSeeServer("a")
+			}
+		}()
+	}
+	wg.Wait()
 }

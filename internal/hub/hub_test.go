@@ -457,3 +457,114 @@ func TestSession_DeleteRemovesFromMap(t *testing.T) {
 		t.Fatal("DELETE returned 204 but session remains in map")
 	}
 }
+
+func TestRefreshSessionsAfterReload_Revokes(t *testing.T) {
+	cfg := basicCfg()
+	cfg.Servers = []config.ServerConfig{
+		{Name: "secret", Enabled: true},
+		{Name: "public", Enabled: true},
+	}
+	cfg.Auth = config.AuthConfig{
+		Enabled: true,
+		Users: []config.AuthUserConfig{
+			{Name: "alice", TokenSHA256: tokenHash("alice-tok"), Role: "agent",
+				AllowedServers: []string{"secret", "public"}},
+		},
+	}
+	h, ts := newTestHub(t, cfg)
+
+	// Alice opens SSE with access to [secret, public].
+	resp := doMCP(t, ts.URL, "alice-tok", "", `{"jsonrpc":"2.0","id":1,"method":"initialize"}`)
+	sid := resp.Header.Get("Mcp-Session-Id")
+	resp.Body.Close()
+
+	req, _ := http.NewRequest("GET", ts.URL+"/mcp", nil)
+	req.Header.Set("Authorization", "Bearer alice-tok")
+	req.Header.Set("Mcp-Session-Id", sid)
+	req.Header.Set("Accept", "text/event-stream")
+	respSSE, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer respSSE.Body.Close()
+	reader := bufio.NewReader(respSSE.Body)
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Reload: alice loses access to secret.
+	oldCfg := h.cfg.Get()
+	newCfg := &config.Config{
+		Proxy:   oldCfg.Proxy,
+		Servers: oldCfg.Servers,
+		Auth: config.AuthConfig{
+			Enabled: true,
+			Users: []config.AuthUserConfig{
+				{Name: "alice", TokenSHA256: tokenHash("alice-tok"), Role: "agent",
+					AllowedServers: []string{"public"}},
+			},
+		},
+	}
+	h.cfg.Swap(newCfg)
+	h.RefreshSessionsAfterReload()
+
+	// Broadcast from secret — alice must NOT receive it.
+	h.OnDownstreamNotification("secret", "notifications/message",
+		json.RawMessage(`{"level":"info","data":"secret payload"}`))
+	// Broadcast from public — alice MUST receive it.
+	h.OnDownstreamNotification("public", "notifications/message",
+		json.RawMessage(`{"level":"info","data":"public payload"}`))
+
+	// Read one message: it must be the public one.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		if strings.Contains(data, "secret payload") {
+			t.Fatalf("alice received forbidden event after revocation: %s", data)
+		}
+		if strings.Contains(data, "public payload") {
+			return // success
+		}
+	}
+	t.Fatalf("public payload not received")
+}
+
+func TestRefreshSessionsAfterReload_ClosesRemovedUser(t *testing.T) {
+	cfg := basicCfg()
+	cfg.Auth = config.AuthConfig{
+		Enabled: true,
+		Users: []config.AuthUserConfig{
+			{Name: "alice", TokenSHA256: tokenHash("alice-tok"), Role: "admin"},
+		},
+	}
+	h, ts := newTestHub(t, cfg)
+
+	resp := doMCP(t, ts.URL, "alice-tok", "", `{"jsonrpc":"2.0","id":1,"method":"initialize"}`)
+	sid := resp.Header.Get("Mcp-Session-Id")
+	resp.Body.Close()
+
+	// Reload: alice is removed.
+	newCfg := &config.Config{
+		Proxy:   cfg.Proxy,
+		Servers: cfg.Servers,
+		Auth: config.AuthConfig{
+			Enabled: true,
+			Users:   []config.AuthUserConfig{},
+		},
+	}
+	h.cfg.Swap(newCfg)
+	h.RefreshSessionsAfterReload()
+
+	h.mu.RLock()
+	_, stillThere := h.sessions[sid]
+	h.mu.RUnlock()
+	if stillThere {
+		t.Fatal("session for removed user should have been closed")
+	}
+}

@@ -88,8 +88,9 @@ func main() {
 	pol := policy.New(holder)
 	brok := broker.New(holder, pol, log)
 	cat := catalog.New(holder, brok, pol, log)
+	var hubSrv *hub.Hub
 	reloadFn := func() ([]string, error) {
-		return reload(*cfgPath, holder, pol, brok, cat, log)
+		return reload(*cfgPath, holder, pol, brok, cat, hubSrv, log)
 	}
 	srv := mcp.NewServer(holder, brok, cat, pol, log, reloadFn)
 
@@ -155,7 +156,6 @@ func main() {
 	}
 
 	// HTTP hub.
-	var hubSrv *hub.Hub
 	var hubErrCh chan error
 	if runHTTP {
 		hubSrv = hub.New(holder, srv, log)
@@ -178,7 +178,7 @@ func main() {
 			case sig := <-sigCh:
 				switch sig {
 				case syscall.SIGHUP:
-					warns, err := reload(*cfgPath, holder, pol, brok, cat, log)
+					warns, err := reload(*cfgPath, holder, pol, brok, cat, hubSrv, log)
 					if err != nil {
 						log.Error("SIGHUP: reload failed", "err", err)
 					}
@@ -264,7 +264,7 @@ func main() {
 // operator-facing warnings (duplicate servers, fields that need a
 // full restart). Errors mean the config was not applied — the old
 // configuration stays live.
-func reload(cfgPath string, holder *config.Holder, pol *policy.Policy, brok *broker.Broker, cat *catalog.Catalog, log *logx.Logger) ([]string, error) {
+func reload(cfgPath string, holder *config.Holder, pol *policy.Policy, brok *broker.Broker, cat *catalog.Catalog, hubSrv *hub.Hub, log *logx.Logger) ([]string, error) {
 	reloadMutex.Lock()
 	defer reloadMutex.Unlock()
 
@@ -286,13 +286,14 @@ func reload(cfgPath string, holder *config.Holder, pol *policy.Policy, brok *bro
 	// waiting for us sees the new config and the reconciled pool;
 	// none can start a backend using the old config after we commit.
 	holder.Swap(newCfg)
-
-	// Stop backends that changed (under reloadMu.Lock inside ApplyConfig).
 	brok.ApplyConfig(old, newCfg)
-
 	pol.Invalidate()
 	cat.Invalidate()
 	cat.ApplyConfig(newCfg)
+
+	if hubSrv != nil {
+		hubSrv.RefreshSessionsAfterReload()
+	}
 
 	if newCfg.Proxy.LogFile != old.Proxy.LogFile {
 		warnings = append(warnings, "log_file changed; restart required")

@@ -9,28 +9,29 @@ import (
 	"time"
 )
 
-// Session is a single logical client. In stdio mode there is exactly
-// one (the local user); in HTTP mode there is one per Mcp-Session-Id.
+// Session is a single logical client.
 type Session struct {
-	ID             string
-	User           string
-	Role           string   // "agent" | "admin"
-	AllowedServers []string // meaningful for role=agent
+	ID   string
+	User string // immutable after creation
+
+	mu             sync.Mutex
+	role           string   // guarded by mu
+	allowedServers []string // guarded by mu
+	lastSeen       time.Time
 
 	createdAt time.Time
-
-	mu       sync.Mutex
-	lastSeen time.Time
 }
 
-// New creates a Session.
+// New creates a Session. The caller's slice is copied so that the
+// caller can safely reuse or mutate it afterwards.
 func New(id, user, role string, allowed []string) *Session {
 	now := time.Now()
+	cp := append([]string(nil), allowed...)
 	return &Session{
 		ID:             id,
 		User:           user,
-		Role:           role,
-		AllowedServers: allowed,
+		role:           role,
+		allowedServers: cp,
 		createdAt:      now,
 		lastSeen:       now,
 	}
@@ -58,23 +59,42 @@ func (s *Session) LastSeen() time.Time {
 // Age returns the time since the session was created.
 func (s *Session) Age() time.Duration { return time.Since(s.createdAt) }
 
+// Role returns the current effective role.
+func (s *Session) Role() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.role
+}
+
+// AllowedServers returns a copy of the current allow-list.
+func (s *Session) AllowedServers() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, len(s.allowedServers))
+	copy(out, s.allowedServers)
+	return out
+}
+
 // UpdatePermissions replaces the cached role and allowed servers.
-// Called by the hub when a request authenticates to ensure the
-// session reflects the current config.
+// Called by the hub when a request authenticates or when the config
+// reloads, to reflect the current auth state.
 func (s *Session) UpdatePermissions(role string, allowed []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.Role = role
-	s.AllowedServers = allowed
+	s.role = role
+	s.allowedServers = append(s.allowedServers[:0], allowed...)
 }
 
+// CanSeeServer reports whether this user is currently allowed to talk
+// to server. Reads under the lock so it is safe against concurrent
+// UpdatePermissions.
 func (s *Session) CanSeeServer(name string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.Role == "admin" {
+	if s.role == "admin" {
 		return true
 	}
-	for _, a := range s.AllowedServers {
+	for _, a := range s.allowedServers {
 		if a == name {
 			return true
 		}

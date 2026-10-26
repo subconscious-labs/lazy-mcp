@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -498,4 +499,80 @@ func newSessionID() string {
 	b := make([]byte, 16)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// RefreshSessionsAfterReload updates every live session's cached
+// permissions against the current auth config and drains buffered
+// notifications when the effective permissions changed. Sessions
+// whose user no longer exists are closed.
+//
+// This is the counterpart of the "update on new request" path in
+// sessionForPrincipal: an SSE stream stays open without new HTTP
+// requests, so we must refresh it explicitly on config reload.
+func (h *Hub) RefreshSessionsAfterReload() {
+	auth := h.cfg.Get().Auth
+
+	h.mu.RLock()
+	states := make([]*sessState, 0, len(h.sessions))
+	for _, st := range h.sessions {
+		states = append(states, st)
+	}
+	h.mu.RUnlock()
+
+	for _, st := range states {
+		if !auth.Enabled {
+			continue // stdio/local mode: no ACLs to refresh
+		}
+
+		var (
+			newRole    string
+			newAllowed []string
+			found      bool
+		)
+		for _, u := range auth.Users {
+			if u.Name == st.sess.User {
+				newRole = u.Role
+				newAllowed = u.AllowedServers
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			// User was removed from config: close the stream so the
+			// client is forced to re-authenticate.
+			h.mu.Lock()
+			delete(h.sessions, st.sess.ID)
+			active := len(h.sessions)
+			h.mu.Unlock()
+			observability.Default().SetSessionsActive(active)
+			st.close()
+			h.log.Info("hub: session revoked (user removed)",
+				"id", st.sess.ID, "user", st.sess.User)
+			continue
+		}
+
+		oldRole := st.sess.Role()
+		oldAllowed := st.sess.AllowedServers()
+		if oldRole == newRole && slices.Equal(oldAllowed, newAllowed) {
+			continue
+		}
+
+		st.sess.UpdatePermissions(newRole, newAllowed)
+
+		// Drain buffered events: they were enqueued under the old ACL
+		// and may include sources the user can no longer see.
+		for {
+			select {
+			case <-st.notifCh:
+				continue
+			default:
+			}
+			break
+		}
+
+		h.log.Info("hub: session permissions updated",
+			"id", st.sess.ID, "user", st.sess.User,
+			"role", newRole, "servers", newAllowed)
+	}
 }

@@ -12,8 +12,8 @@ const reloadCooldown = 5 * time.Second
 
 func (h *Handlers) Reload(ctx context.Context, _ map[string]any) (string, error) {
 	user, sess := sessionUser(ctx)
-	if sess != nil && sess.Role != "admin" {
-		return "", fmt.Errorf("reload: admin role required (current: %q, user: %q)", sess.Role, user)
+	if sess != nil && sess.Role() != "admin" {
+		return "", fmt.Errorf("reload: admin role required (current: %q, user: %q)", sess.Role(), user)
 	}
 	if h.reloadFn == nil {
 		return "", fmt.Errorf("reload: not available (this build has no config file to reload)")
