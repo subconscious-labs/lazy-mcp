@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -319,11 +318,10 @@ func (p *backendProcess) requestRun(ctx context.Context, run *processRun, method
 			return nil, fmt.Errorf("backend closed during request")
 		}
 		if msg.Error != nil {
-			if msg.Error.Code >= -32700 && msg.Error.Code <= -32602 {
-				return nil, fmt.Errorf("%w: code %d: %s",
-					ErrRPCClientError, msg.Error.Code, msg.Error.Message)
-			}
-			return nil, fmt.Errorf("rpc error %d: %s", msg.Error.Code, msg.Error.Message)
+			return nil, classifyRPCError(&rpcErrorShape{
+				Code:    msg.Error.Code,
+				Message: msg.Error.Message,
+			})
 		}
 		return msg.Result, nil
 	case <-ctx.Done():
@@ -371,35 +369,22 @@ func (p *backendProcess) ListTools(ctx context.Context) ([]ToolInfo, error) {
 		if err != nil {
 			return nil, err
 		}
-
-		type rawTool struct {
-			Name        string          `json:"name"`
-			Description string          `json:"description"`
-			InputSchema json.RawMessage `json:"inputSchema"`
-			Annotations ToolAnnotations `json:"annotations,omitempty"`
+		page, next, err := decodeToolsListPage(res)
+		if err != nil {
+			return nil, err
 		}
-		var lr struct {
-			Tools      []rawTool `json:"tools"`
-			NextCursor string    `json:"nextCursor,omitempty"`
+		all = append(all, page...)
+		if next == "" {
+			return all, nil
 		}
-		if err := json.Unmarshal(res, &lr); err != nil {
-			return nil, fmt.Errorf("parse tools/list: %w", err)
-		}
-		for _, t := range lr.Tools {
-			all = append(all, ToolInfo(t))
-		}
-		if lr.NextCursor == "" {
-			break
-		}
-		if seen[lr.NextCursor] {
+		if seen[next] {
 			p.log.Warn("tools/list duplicate cursor, stopping",
-				"server", p.cfg.Name, "cursor", lr.NextCursor)
-			break
+				"server", p.cfg.Name, "cursor", next)
+			return all, nil
 		}
-		seen[lr.NextCursor] = true
-		cursor = lr.NextCursor
+		seen[next] = true
+		cursor = next
 	}
-	return all, nil
 }
 
 func (p *backendProcess) CallTool(ctx context.Context, name string, args map[string]any) (string, error) {
@@ -414,56 +399,7 @@ func (p *backendProcess) CallTool(ctx context.Context, name string, args map[str
 	if err != nil {
 		return "", err
 	}
-
-	type contentItem struct {
-		Type     string          `json:"type"`
-		Text     string          `json:"text,omitempty"`
-		MimeType string          `json:"mimeType,omitempty"`
-		Data     string          `json:"data,omitempty"`
-		Resource json.RawMessage `json:"resource,omitempty"`
-	}
-	type callResult struct {
-		Content           []contentItem   `json:"content"`
-		IsError           bool            `json:"isError"`
-		StructuredContent json.RawMessage `json:"structuredContent,omitempty"`
-	}
-	var cr callResult
-	if err := json.Unmarshal(res, &cr); err != nil {
-		return "", fmt.Errorf("parse tools/call: %w", err)
-	}
-
-	if cr.IsError {
-		var parts []string
-		for _, c := range cr.Content {
-			if c.Type == "text" {
-				parts = append(parts, c.Text)
-			}
-		}
-		return "", fmt.Errorf("%w: %s", ErrToolError, strings.Join(parts, "\n"))
-	}
-
-	if len(cr.StructuredContent) > 0 && string(cr.StructuredContent) != "null" {
-		return string(cr.StructuredContent), nil
-	}
-
-	var parts []string
-	var nonText []string
-	for _, c := range cr.Content {
-		switch c.Type {
-		case "text":
-			parts = append(parts, c.Text)
-		case "image", "audio":
-			nonText = append(nonText, fmt.Sprintf("[%s content omitted: mimeType=%s]", c.Type, c.MimeType))
-		case "resource":
-			nonText = append(nonText, "[resource content omitted]")
-		default:
-			nonText = append(nonText, fmt.Sprintf("[%s content omitted]", c.Type))
-		}
-	}
-	if len(nonText) > 0 {
-		parts = append(parts, nonText...)
-	}
-	return strings.Join(parts, "\n"), nil
+	return decodeCallToolResult(res)
 }
 
 func (p *backendProcess) Alive() bool {

@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,10 +19,15 @@ import (
 )
 
 type mockHTTPMCP struct {
-	tools       []string
-	mu          sync.Mutex
-	sess        string
+	tools []string
+	mu    sync.Mutex
+	sess  string
+
 	lastVersion string
+
+	paginated  bool
+	structured bool
+	images     bool
 }
 
 func (m *mockHTTPMCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -30,32 +36,29 @@ func (m *mockHTTPMCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodGet {
-		// SSE
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher := w.(http.Flusher)
-		// Send a notification
 		msg := `{"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"hello from http"}}` + "\n"
-		fmt.Fprintf(w, "data: %s\n", strings.TrimSuffix(msg, "\n"))
+		fmt.Fprintf(w, "data: %s\n\n", msg)
 		flusher.Flush()
-		// Hold connection
 		<-r.Context().Done()
 		return
 	}
 
-	// POST
-	if r.Header.Get("MCP-Protocol-Version") != "" {
-		m.mu.Lock()
-		m.lastVersion = r.Header.Get("MCP-Protocol-Version")
-		m.mu.Unlock()
-	}
 	var req struct {
-		ID     any    `json:"id"`
-		Method string `json:"method"`
+		ID     any             `json:"id"`
+		Method string          `json:"method"`
+		Params json.RawMessage `json:"params,omitempty"`
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 
+	if v := r.Header.Get("MCP-Protocol-Version"); v != "" {
+		m.mu.Lock()
+		m.lastVersion = v
+		m.mu.Unlock()
+	}
+
 	if req.ID == nil {
-		// notification
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
@@ -76,13 +79,53 @@ func (m *mockHTTPMCP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"serverInfo":      map[string]any{"name": "mock-http", "version": "1"},
 		}
 	case "tools/list":
-		var tools []map[string]any
-		for _, name := range m.tools {
-			tools = append(tools, map[string]any{"name": name})
+		if m.paginated {
+			var p struct {
+				Cursor string `json:"cursor"`
+			}
+			_ = json.Unmarshal(req.Params, &p)
+			start := 0
+			if p.Cursor != "" {
+				fmt.Sscanf(p.Cursor, "page-%d", &start)
+			}
+			end := len(m.tools)
+			next := ""
+			if end-start > 1 {
+				end = start + 1
+				next = fmt.Sprintf("page-%d", end)
+			}
+			list := make([]map[string]any, 0, end-start)
+			for _, name := range m.tools[start:end] {
+				list = append(list, map[string]any{"name": name})
+			}
+			r := map[string]any{"tools": list}
+			if next != "" {
+				r["nextCursor"] = next
+			}
+			res = r
+		} else {
+			list := make([]map[string]any, 0, len(m.tools))
+			for _, name := range m.tools {
+				list = append(list, map[string]any{"name": name})
+			}
+			res = map[string]any{"tools": list}
 		}
-		res = map[string]any{"tools": tools}
 	case "tools/call":
-		res = map[string]any{"content": []map[string]any{{"type": "text", "text": "called!"}}}
+		if m.structured {
+			res = map[string]any{
+				"content":           []map[string]any{},
+				"structuredContent": map[string]any{"answer": 42},
+			}
+		} else if m.images {
+			res = map[string]any{
+				"content": []map[string]any{
+					{"type": "text", "text": "caption"},
+					{"type": "image", "mimeType": "image/png", "data": "..."},
+				},
+			}
+		} else {
+			res = map[string]any{"content": []map[string]any{{"type": "text", "text": "called!"}}}
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -312,5 +355,104 @@ func TestHTTPBackend_ReinitializesOn404(t *testing.T) {
 	}
 	if got := initCount.Load(); got < 2 {
 		t.Fatalf("expected reinitialize after 404, got %d inits", got)
+	}
+}
+
+func TestHTTPBackend_ToolsListPagination(t *testing.T) {
+	mock := &mockHTTPMCP{tools: []string{"a", "b", "c"}, paginated: true}
+	ts := httptest.NewServer(mock)
+	defer ts.Close()
+
+	cfg := config.ServerConfig{Name: "m", Transport: "http", URL: ts.URL}
+	b := newHTTPBackend(cfg, 10*1024*1024, logx.New(io.Discard))
+	defer b.Stop()
+
+	tools, err := b.ListTools(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tools) != 3 {
+		t.Fatalf("expected 3 tools after pagination, got %d", len(tools))
+	}
+}
+
+func TestHTTPBackend_StructuredContent(t *testing.T) {
+	mock := &mockHTTPMCP{tools: []string{"t"}, structured: true}
+	ts := httptest.NewServer(mock)
+	defer ts.Close()
+
+	cfg := config.ServerConfig{Name: "m", Transport: "http", URL: ts.URL}
+	b := newHTTPBackend(cfg, 10*1024*1024, logx.New(io.Discard))
+	defer b.Stop()
+
+	res, err := b.CallTool(context.Background(), "t", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res, "answer") {
+		t.Fatalf("structuredContent lost: %q", res)
+	}
+}
+
+func TestHTTPBackend_NonTextMarked(t *testing.T) {
+	mock := &mockHTTPMCP{tools: []string{"t"}, images: true}
+	ts := httptest.NewServer(mock)
+	defer ts.Close()
+
+	cfg := config.ServerConfig{Name: "m", Transport: "http", URL: ts.URL}
+	b := newHTTPBackend(cfg, 10*1024*1024, logx.New(io.Discard))
+	defer b.Stop()
+
+	res, err := b.CallTool(context.Background(), "t", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res, "image content omitted") {
+		t.Fatalf("non-text block silently dropped: %q", res)
+	}
+}
+
+func TestHTTPBackend_ClientErrorClassification(t *testing.T) {
+	// Mock that returns -32602 on tools/call.
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+			return
+		}
+		var req struct {
+			ID     any    `json:"id"`
+			Method string `json:"method"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		if req.ID == nil {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if req.Method == "tools/call" {
+			json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0", "id": req.ID,
+				"error": map[string]any{"code": -32602, "message": "bad params"},
+			})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"jsonrpc": "2.0", "id": req.ID,
+			"result": map[string]any{"protocolVersion": "2025-11-25"},
+		})
+	})
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	cfg := config.ServerConfig{Name: "m", Transport: "http", URL: ts.URL}
+	b := newHTTPBackend(cfg, 10*1024*1024, logx.New(io.Discard))
+	defer b.Stop()
+
+	_, err := b.CallTool(context.Background(), "t", nil)
+	if !errors.Is(err, ErrRPCClientError) {
+		t.Fatalf("expected ErrRPCClientError, got %v", err)
 	}
 }

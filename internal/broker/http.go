@@ -1,7 +1,6 @@
 package broker
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -282,43 +281,37 @@ func (h *httpBackend) parseJSONBytes(raw []byte, id int64) (json.RawMessage, err
 		return nil, fmt.Errorf("id mismatch: got %d, want %d", resp.ID, id)
 	}
 	if resp.Error != nil {
-		return nil, fmt.Errorf("rpc error %d: %s", resp.Error.Code, resp.Error.Message)
+		return nil, classifyRPCError(&rpcErrorShape{Code: resp.Error.Code, Message: resp.Error.Message})
 	}
 	return resp.Result, nil
 }
 
 func (h *httpBackend) parseSSEResponse(r io.Reader, id int64) (json.RawMessage, error) {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), h.maxRaw)
-	for sc.Scan() {
-		line := sc.Text()
-		if !strings.HasPrefix(line, "data: ") {
-			continue
+	s := newSSEScanner(r, h.maxRaw)
+	for {
+		data, err := s.next()
+		if errors.Is(err, io.EOF) {
+			return nil, fmt.Errorf("stream closed before response")
 		}
-		data := strings.TrimPrefix(line, "data: ")
-
+		if err != nil {
+			return nil, err
+		}
 		var resp struct {
 			ID     int64           `json:"id"`
 			Result json.RawMessage `json:"result"`
-			Error  *struct {
-				Code    int    `json:"code"`
-				Message string `json:"message"`
-			} `json:"error"`
+			Error  *rpcErrorShape  `json:"error,omitempty"`
 		}
-		if err := json.Unmarshal([]byte(data), &resp); err != nil {
+		if err := json.Unmarshal(data, &resp); err != nil {
 			continue
 		}
-		if resp.ID == id {
-			if resp.Error != nil {
-				return nil, fmt.Errorf("rpc error %d: %s", resp.Error.Code, resp.Error.Message)
-			}
-			return resp.Result, nil
+		if resp.ID != id {
+			continue
 		}
+		if resp.Error != nil {
+			return nil, classifyRPCError(resp.Error)
+		}
+		return resp.Result, nil
 	}
-	if err := sc.Err(); err != nil {
-		return nil, err
-	}
-	return nil, fmt.Errorf("stream closed before response")
 }
 
 func (h *httpBackend) notify(ctx context.Context, method string, params any) error {
@@ -369,40 +362,37 @@ func (h *httpBackend) nextIDAdd() int64 {
 }
 
 func (h *httpBackend) ListTools(ctx context.Context) ([]ToolInfo, error) {
-	if err := h.Ensure(ctx); err != nil {
-		return nil, err
+	var all []ToolInfo
+	cursor := ""
+	seen := make(map[string]bool)
+	for {
+		params := map[string]any{}
+		if cursor != "" {
+			params["cursor"] = cursor
+		}
+		res, err := h.request(ctx, "tools/list", params)
+		if err != nil {
+			return nil, err
+		}
+		page, next, err := decodeToolsListPage(res)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, page...)
+		if next == "" {
+			return all, nil
+		}
+		if seen[next] {
+			h.log.Warn("tools/list duplicate cursor, stopping",
+				"server", h.cfg.Name, "cursor", next)
+			return all, nil
+		}
+		seen[next] = true
+		cursor = next
 	}
-
-	res, err := h.request(ctx, "tools/list", map[string]any{})
-	if err != nil {
-		return nil, err
-	}
-
-	type rawTool struct {
-		Name        string          `json:"name"`
-		Description string          `json:"description"`
-		InputSchema json.RawMessage `json:"inputSchema"`
-		Annotations ToolAnnotations `json:"annotations,omitempty"`
-	}
-	var lr struct {
-		Tools []rawTool `json:"tools"`
-	}
-	if err := json.Unmarshal(res, &lr); err != nil {
-		return nil, fmt.Errorf("parse tools/list: %w", err)
-	}
-
-	tools := make([]ToolInfo, 0, len(lr.Tools))
-	for _, t := range lr.Tools {
-		tools = append(tools, ToolInfo(t))
-	}
-	return tools, nil
 }
 
 func (h *httpBackend) CallTool(ctx context.Context, name string, args map[string]any) (string, error) {
-	if err := h.Ensure(ctx); err != nil {
-		return "", err
-	}
-
 	res, err := h.request(ctx, "tools/call", map[string]any{
 		"name":      name,
 		"arguments": args,
@@ -410,35 +400,13 @@ func (h *httpBackend) CallTool(ctx context.Context, name string, args map[string
 	if err != nil {
 		return "", err
 	}
-
-	type contentItem struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+	result, err := decodeCallToolResult(res)
+	if err != nil {
+		return "", err
 	}
-	type callResult struct {
-		Content []contentItem `json:"content"`
-		IsError bool          `json:"isError"`
-	}
-	var cr callResult
-	if err := json.Unmarshal(res, &cr); err != nil {
-		return "", fmt.Errorf("parse tools/call: %w", err)
-	}
-
-	parts := make([]string, 0, len(cr.Content))
-	for _, c := range cr.Content {
-		if c.Type == "text" {
-			parts = append(parts, c.Text)
-		}
-	}
-	result := strings.Join(parts, "\n")
-	if cr.IsError {
-		return "", fmt.Errorf("%w: %s", ErrToolError, result)
-	}
-
 	h.mu.Lock()
 	h.lastToolCall = time.Now()
 	h.mu.Unlock()
-
 	return result, nil
 }
 
@@ -525,41 +493,36 @@ func (h *httpBackend) readSSE(ctx context.Context) {
 	}
 	defer res.Body.Close()
 
-	if res.StatusCode == http.StatusNotFound || res.StatusCode == http.StatusMethodNotAllowed {
-		// Backend doesn't support server-to-client notifications via SSE.
-		// This is valid per MCP spec (e.g., mempalace uses POST-only).
-		h.log.Info("sse not supported by backend", "server", h.cfg.Name)
-		return
-	}
-	if res.StatusCode != 200 {
+	if res.StatusCode != http.StatusOK {
 		h.log.Warn("sse unexpected status", "server", h.cfg.Name, "code", res.StatusCode)
 		return
 	}
 
-	sc := bufio.NewScanner(res.Body)
-	for sc.Scan() {
-		line := sc.Text()
-		if !strings.HasPrefix(line, "data: ") {
-			continue
+	s := newSSEScanner(res.Body, h.maxRaw)
+	for {
+		data, err := s.next()
+		if errors.Is(err, io.EOF) {
+			return
 		}
-		data := strings.TrimPrefix(line, "data: ")
+		if err != nil {
+			h.log.Warn("sse read failed", "server", h.cfg.Name, "err", err)
+			return
+		}
 		var msg struct {
 			Method string          `json:"method"`
 			Params json.RawMessage `json:"params"`
 		}
-		if err := json.Unmarshal([]byte(data), &msg); err != nil {
+		if err := json.Unmarshal(data, &msg); err != nil {
 			continue
 		}
-		if strings.HasPrefix(msg.Method, "notifications/") {
-			h.mu.Lock()
-			nh := h.notifHandler
-			h.mu.Unlock()
-			if nh != nil {
-				nh(h.cfg.Name, msg.Method, msg.Params)
-			}
+		if !strings.HasPrefix(msg.Method, "notifications/") {
+			continue
 		}
-	}
-	if err := sc.Err(); err != nil && ctx.Err() == nil {
-		h.log.Warn("sse stream closed", "server", h.cfg.Name, "err", err)
+		h.mu.Lock()
+		nh := h.notifHandler
+		h.mu.Unlock()
+		if nh != nil {
+			nh(h.cfg.Name, msg.Method, msg.Params)
+		}
 	}
 }
