@@ -144,7 +144,7 @@ printf %s "$TOKEN" | sha256sum | awk '{print $1}'
 `${VAR}`, `${VAR:-default}`, `${VAR:?msg}`, `${file:/path}`, `$$` for literal `$`. Evaluated after YAML parsing. Cyclic references are rejected at load time.
 
 ## Meta-tools
-- `meta_search` — `{hits, total, has_more, warnings?}`.
+- `meta_search` — `{hits, total, has_more, warnings?}`. Each hit carries `score` in `[0,1]`; a query word that matches nothing produces a warning instead of dropping the whole query.
 - `meta_call` — supports pagination (`has_more`, `next_cursor`).
 - `meta_describe_tool` — full schema, `dangerous`, `annotations`.
 - `meta_list_servers` — registry + runtime status.
@@ -153,6 +153,21 @@ printf %s "$TOKEN" | sha256sum | awk '{print $1}'
 
 ### Pagination
 Pages are **byte-level slices** of the full result. Concatenate them verbatim; individual pages are not necessarily valid JSON. `result` is embedded as an object/array when the backend returned JSON.
+
+### Search scoring
+
+Each hit carries a `score` in `[0, 1]` — a per-word average of how
+strongly the query matched the entry. Exact tool-name or ref matches
+contribute `1.0`, prefix matches `0.7`, tag matches `0.35`, summary
+matches `0.2`. A word that does not match contributes 0 to the score
+but stays in the denominator, so partial matches rank below complete
+ones. The model can use `score` to decide whether to trust a hit
+without opening it.
+
+AND semantics: if **some** query words match and **some** do not, the
+response includes hits from the matched words and a warning listing
+the unmatched terms. If **no** word matches anywhere, `hits` is empty
+and no warning is emitted.
 
 ### Notifications (HTTP)
 - `GET /mcp` (Accept: text/event-stream) — server pushes `notifications/message`.
@@ -175,6 +190,8 @@ make bench        # benchmarks
 ```
 Broker tests use a mock MCP server (`internal/broker/testdata/mockmcp`) supporting pagination, annotations, notifications, and error injection.
 
+`make bench` runs on a synthetic 1200-entry corpus (12 servers × 100 tools) with mixed English/Russian summaries - representative of production size rather than a small toy catalog.
+
 ## Status
 
 Implemented:
@@ -189,6 +206,7 @@ Implemented:
 - Per-generation process isolation: a timed-out request cannot leak its write into a restarted backend; `Stop` kills the whole process group.
 - Metrics (tools, sessions, notifications, auth failures), structured JSONL logs, graceful shutdown.
 - JSON-RPC compliance: `ping`, `logging/setLevel`, exact integer IDs, parse error responses.
+- `meta_search` returns a normalized `score` in `[0,1]` per hit and a warning when the query has unmatched terms; JSON-RPC client errors (-32602) from downstream do not trip the circuit breaker on either transport.
 
 Not implemented:
 - OAuth 2.1 / dynamic client registration (Bearer only).
