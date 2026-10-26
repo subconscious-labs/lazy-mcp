@@ -549,6 +549,9 @@ func (p *backendProcess) killGenLocked(gen int) {
 		pid := run.proc.Process.Pid
 		_ = syscall.Kill(-pid, syscall.SIGTERM)
 
+		// Wait for the leader, but always SIGKILL the whole group at
+		// the end so that children which ignored SIGTERM (or were
+		// reparented after the leader exited) don't survive us.
 		done := make(chan struct{})
 		go func() {
 			_ = run.proc.Wait()
@@ -556,13 +559,12 @@ func (p *backendProcess) killGenLocked(gen int) {
 		}()
 		select {
 		case <-done:
-			// Leader exited; also SIGKILL the group in case children
-			// stayed behind (no-op if empty).
-			_ = syscall.Kill(-pid, syscall.SIGKILL)
+			// Leader is gone; still make sure the group is empty.
 		case <-time.After(2 * time.Second):
-			_ = syscall.Kill(-pid, syscall.SIGKILL)
-			<-done
+			// Leader ignored SIGTERM; escalate below.
 		}
+		_ = syscall.Kill(-pid, syscall.SIGKILL)
+		<-done
 	}
 }
 
