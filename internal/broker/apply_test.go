@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/subconscious-labs/lazy-mcp/internal/config"
@@ -186,5 +187,57 @@ func TestServerRestartRequired(t *testing.T) {
 				t.Fatalf("got %v want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestApplyConfig_NoRaceWithEnsure(t *testing.T) {
+	srv := testServer("mock", map[string]string{"MOCK_TOOLS": "old"})
+	b := newTestBroker(t, []config.ServerConfig{srv}, brokerOpts{})
+
+	// Warm up to start the backend.
+	if _, err := b.ListTools(bg(), "mock"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Prepare new config with changed env.
+	srvNew := srv
+	srvNew.Env = map[string]string{"MOCK_TOOLS": "new"}
+	oldCfg := b.cfg.Get()
+	newCfg := &config.Config{
+		Proxy:   oldCfg.Proxy,
+		Servers: []config.ServerConfig{srvNew},
+	}
+
+	// Concurrent Ensure and ApplyConfig. Ensure must never spawn a
+	// process using oldCfg after the reload committed.
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				_, _ = b.ListTools(bg(), "mock")
+			}
+		}
+	}()
+
+	// Simulate reload: Swap under the same lock ApplyConfig uses.
+	b.cfg.Swap(newCfg)
+	b.ApplyConfig(oldCfg, newCfg)
+
+	close(stop)
+	wg.Wait()
+
+	// After reload, tools must reflect the new config.
+	tools, err := b.ListTools(bg(), "mock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tools) != 1 || tools[0].Name != "new" {
+		t.Fatalf("expected 'new' tool after reload, got %+v", tools)
 	}
 }

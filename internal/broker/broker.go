@@ -80,17 +80,19 @@ func New(cfg *config.Holder, pol *policy.Policy, log *logx.Logger) *Broker {
 // Ensure returns a ready Backend for serverName, starting it if necessary.
 // The handshake (initialize) is bounded by proxy.initialize_timeout.
 func (b *Broker) Ensure(ctx context.Context, serverName string) (Backend, error) {
-	cfg := b.cfg.Get()
+	b.reloadMu.RLock()
 
+	cfg := b.cfg.Get()
 	srvcfg, ok := cfg.Server(serverName)
 	if !ok {
+		b.reloadMu.RUnlock()
 		return nil, fmt.Errorf("broker: server %q not found in config", serverName)
 	}
 	if !srvcfg.Enabled {
+		b.reloadMu.RUnlock()
 		return nil, fmt.Errorf("broker: server %q is disabled", serverName)
 	}
 
-	b.reloadMu.RLock()
 	b.mu.Lock()
 	proc, exists := b.pool[serverName]
 	if !exists {
@@ -105,6 +107,7 @@ func (b *Broker) Ensure(ctx context.Context, serverName string) (Backend, error)
 		b.pool[serverName] = proc
 	}
 	b.mu.Unlock()
+
 	b.reloadMu.RUnlock()
 
 	startCtx, cancel := context.WithTimeout(ctx, cfg.Proxy.InitializeTimeout)

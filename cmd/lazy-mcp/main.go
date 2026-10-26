@@ -281,18 +281,17 @@ func reload(cfgPath string, holder *config.Holder, pol *policy.Policy, brok *bro
 
 	old := holder.Get()
 
-	// 1. Stop backends that changed — under reloadMu.Lock inside ApplyConfig.
-	brok.ApplyConfig(old, newCfg)
-
-	// 2. Invalidate caches.
-	pol.Invalidate()
-	cat.Invalidate()
-
-	// 3. Publish the new config last, so every Ensure that observes
-	//    the new config also observes the reconciled broker pool.
+	// Publish the new config first, then reconcile the broker pool,
+	// all while Ensure() is blocked on reloadMu.RLock(). Any Ensure
+	// waiting for us sees the new config and the reconciled pool;
+	// none can start a backend using the old config after we commit.
 	holder.Swap(newCfg)
 
-	// 4. Prune the catalog.
+	// Stop backends that changed (under reloadMu.Lock inside ApplyConfig).
+	brok.ApplyConfig(old, newCfg)
+
+	pol.Invalidate()
+	cat.Invalidate()
 	cat.ApplyConfig(newCfg)
 
 	if newCfg.Proxy.LogFile != old.Proxy.LogFile {
