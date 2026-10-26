@@ -2,70 +2,50 @@ package catalog
 
 import "strings"
 
-// scoreWord returns the relevance of a single query word w against e.
-// All lowercase views are precomputed on ToolEntry, so this performs no
-// allocations.
-func scoreWord(w string, e ToolEntry) float64 {
-	var s float64
+// scoreWord returns a per-word relevance in [0, 1] for one query word
+// against e. Zero means no match. Values are calibrated for the human
+// reader (and the model), not for ranking precision — ranking only
+// needs monotonicity, which is preserved.
+func scoreWord(w string, e *ToolEntry) float64 {
+	if w == "" {
+		return 0
+	}
 
-	if e.toolLower == w {
-		s += 5
+	best := 0.0
+
+	// Strongest: exact name or exact ref.
+	if e.toolLower == w || e.refLower == w {
+		return 1.0
 	}
-	if e.refLower == w {
-		s += 5
-	}
+
 	if strings.HasPrefix(e.toolLower, w) {
-		s += 3
+		best = 0.7
 	}
-	if strings.Contains(e.toolLower, w) {
-		s += 2
+	if strings.Contains(e.toolLower, w) && best < 0.5 {
+		best = 0.5
 	}
-	if strings.Contains(e.refLower, w) {
-		s += 1.5
+	if strings.Contains(e.refLower, w) && best < 0.4 {
+		best = 0.4
 	}
 	for _, t := range e.tagsLower {
 		if strings.Contains(t, w) {
-			s += 1.5
+			if best < 0.35 {
+				best = 0.35
+			}
 			break
 		}
 	}
-	if strings.Contains(e.serverLower, w) {
-		s++
+	if strings.Contains(e.serverLower, w) && best < 0.25 {
+		best = 0.25
 	}
-	if strings.Contains(e.summaryLower, w) {
-		s++
+	if strings.Contains(e.summaryLower, w) && best < 0.2 {
+		best = 0.2
 	}
-	return s
+	return best
 }
 
-// wordMatchesEntry reports whether w has any relevance to e.
-func wordMatchesEntry(w string, e ToolEntry) bool {
-	if e.toolLower == w || e.refLower == w {
-		return true
-	}
-	if strings.Contains(e.toolLower, w) {
-		return true
-	}
-	if strings.Contains(e.refLower, w) {
-		return true
-	}
-	for _, t := range e.tagsLower {
-		if strings.Contains(t, w) {
-			return true
-		}
-	}
-	if strings.Contains(e.serverLower, w) {
-		return true
-	}
-	if strings.Contains(e.summaryLower, w) {
-		return true
-	}
-	return false
-}
-
-// wordMatchesServerMeta reports whether w matches a server's own metadata
-// (name, description, tags) rather than its tools. This path is not on the
-// hot loop (server count is small), so it lowercases on the fly.
+// wordMatchesServerMeta reports whether w matches a server's own
+// metadata (name, description, tags) rather than its tools.
 func wordMatchesServerMeta(w, serverName, serverDescription string, serverTags []string) bool {
 	if strings.Contains(strings.ToLower(serverName), w) {
 		return true

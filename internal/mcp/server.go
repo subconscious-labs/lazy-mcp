@@ -228,7 +228,7 @@ func (s *Server) toolManifest(prefix string) []map[string]any {
 	return []map[string]any{
 		{
 			"name":        prefix + "_search",
-			"description": "Search for tools across all registered MCP backends. Returns {hits, total, has_more, warnings?}. total is the full match count before limit; has_more is true when hits were truncated by limit. warnings appear when a query term matches an enabled server's metadata but that server has no tools indexed (e.g. it is down). Use this first to discover available tools.",
+			"description": "Search for tools across all registered MCP backends. Returns {hits, total, has_more, warnings?}. Each hit carries `score` in [0,1]: a higher score means the entry matched the query more strongly. A query word that matches nothing produces a warning instead of dropping the whole query — check warnings when hits look weak. warnings also appear when a query term matches an enabled server's metadata but that server has no tools indexed.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{

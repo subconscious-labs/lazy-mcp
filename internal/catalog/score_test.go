@@ -34,15 +34,15 @@ func TestScoreWord_Name(t *testing.T) {
 	}
 	e.computeLower()
 
-	if got := scoreWord("ssh_exec", e); got <= 0 {
+	if got := scoreWord("ssh_exec", &e); got <= 0 {
 		t.Fatalf("exact name should match, got %v", got)
 	}
-	if got := scoreWord("zzz", e); got != 0 {
+	if got := scoreWord("zzz", &e); got != 0 {
 		t.Fatalf("no match expected, got %v", got)
 	}
 }
 
-func TestWordMatchesEntry(t *testing.T) {
+func TestScoreWord_MatchesSomething(t *testing.T) {
 	e := ToolEntry{
 		Ref:     "ssh/ssh_exec",
 		Server:  "ssh",
@@ -54,14 +54,14 @@ func TestWordMatchesEntry(t *testing.T) {
 
 	yes := []string{"ssh", "ssh_exec", "exec", "command", "host", "remote"}
 	for _, w := range yes {
-		if !wordMatchesEntry(w, e) {
-			t.Errorf("wordMatchesEntry(%q) = false, want true", w)
+		if scoreWord(w, &e) <= 0 {
+			t.Errorf("scoreWord(%q) = 0, want > 0", w)
 		}
 	}
 	no := []string{"zzz", "database", "totally-unrelated"}
 	for _, w := range no {
-		if wordMatchesEntry(w, e) {
-			t.Errorf("wordMatchesEntry(%q) = true, want false", w)
+		if scoreWord(w, &e) != 0 {
+			t.Errorf("scoreWord(%q) > 0, want 0", w)
 		}
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -80,7 +81,7 @@ func (h *Handlers) Search(ctx context.Context, args map[string]any) (string, err
 		}
 	}
 
-	visible := func(e catalog.ToolEntry) bool {
+	visible := func(e *catalog.ToolEntry) bool {
 		if sess == nil {
 			return true
 		}
@@ -88,7 +89,6 @@ func (h *Handlers) Search(ctx context.Context, args map[string]any) (string, err
 			return false
 		}
 		if e.Tool == "" {
-			// Server-only probe from Catalog's warning path.
 			return sess.CanSeeServer(e.Server)
 		}
 		return h.policy.Visible(user, e.Server, e.Tool)
@@ -97,26 +97,27 @@ func (h *Handlers) Search(ctx context.Context, args map[string]any) (string, err
 	result := h.cat.Search(query, limit, visible)
 
 	type hitOut struct {
-		Ref         string   `json:"tool_ref"`
-		Server      string   `json:"server"`
-		Tool        string   `json:"tool"`
-		Summary     string   `json:"summary"`
-		Tags        []string `json:"tags"`
-		InputHint   string   `json:"input_hint,omitempty"`
-		Dangerous   bool     `json:"dangerous,omitempty"`
-		Destructive bool     `json:"destructive,omitempty"`
+		Ref       string   `json:"tool_ref"`
+		Server    string   `json:"server"`
+		Tool      string   `json:"tool"`
+		Summary   string   `json:"summary"`
+		Tags      []string `json:"tags"`
+		InputHint string   `json:"input_hint,omitempty"`
+		Dangerous bool     `json:"dangerous,omitempty"`
+		Score     float64  `json:"score"`
 	}
 	hits := make([]hitOut, 0, len(result.Hits))
 	for _, hit := range result.Hits {
 		hits = append(hits, hitOut{
-			Ref:         hit.Entry.Ref,
-			Server:      hit.Entry.Server,
-			Tool:        hit.Entry.Tool,
-			Summary:     hit.Entry.Summary,
-			Tags:        hit.Entry.Tags,
-			InputHint:   hit.Entry.InputHint,
-			Dangerous:   hit.Entry.Dangerous,
-			Destructive: hit.Entry.Annotations.DestructiveHint,
+			Ref:       hit.Entry.Ref,
+			Server:    hit.Entry.Server,
+			Tool:      hit.Entry.Tool,
+			Summary:   hit.Entry.Summary,
+			Tags:      hit.Entry.Tags,
+			InputHint: hit.Entry.InputHint,
+			Dangerous: hit.Entry.Dangerous,
+			// 3 decimal places is enough for a model to tell 0.945 from 0.211
+			Score: math.Round(hit.Score*1000) / 1000,
 		})
 	}
 

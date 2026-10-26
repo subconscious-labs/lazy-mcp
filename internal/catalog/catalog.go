@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -50,7 +51,7 @@ func (e *ToolEntry) computeLower() {
 
 // SearchHit is a ranked result from Search.
 type SearchHit struct {
-	Entry ToolEntry
+	Entry *ToolEntry
 	Score float64
 }
 
@@ -208,18 +209,19 @@ func (c *Catalog) Invalidate() {
 	c.mu.Unlock()
 }
 
-type matchKind int
-
-const (
-	matchNone matchKind = iota
-	matchCatalog
-	matchServer
-)
-
-// Search returns scored hits for query plus warnings. If filter is
-// non-nil, only entries for which filter(e) is true are considered;
-// warnings and totals reflect the filtered view.
-func (c *Catalog) Search(query string, limit int, filter func(ToolEntry) bool) SearchResult {
+// Search returns scored hits for query plus warnings for query terms
+// that matched nothing. Semantics:
+//
+//   - All words matched somewhere → hits as before, no warnings.
+//   - Some words matched, some did not → hits from matched words only;
+//     unmatched terms are reported as warnings so the caller knows the
+//     query was partial.
+//   - No word matched anywhere → empty result, no warnings.
+//
+// Score in each hit is a per-word average in [0, 1]; a higher score
+// means the entry matched the query more strongly, not that it ranks
+// higher in absolute terms.
+func (c *Catalog) Search(query string, limit int, filter func(*ToolEntry) bool) SearchResult {
 	q := strings.ToLower(strings.TrimSpace(query))
 	if q == "" {
 		return c.allHits(limit, filter)
@@ -233,63 +235,77 @@ func (c *Catalog) Search(query string, limit int, filter func(ToolEntry) bool) S
 	entries := c.entries
 	c.mu.RUnlock()
 
-	if filter != nil {
-		kept := make([]ToolEntry, 0, len(entries))
-		for _, e := range entries {
-			if filter(e) {
-				kept = append(kept, e)
-			}
-		}
-		entries = kept
+	perWordMatched := make([]bool, len(words))
+	// Cap the initial hint: a catalog with 1200 entries and a typical
+	// query that matches ~150 should not pre-allocate 1200 SearchHits.
+	capHint := len(entries)
+	if capHint > 256 {
+		capHint = 256
 	}
+	hits := make([]SearchHit, 0, capHint)
+	denom := float64(len(words))
 
-	matches := make([]matchKind, len(words))
-	serverTerms := map[string][]string{}
-
-	for i, w := range words {
-		for _, e := range entries {
-			if wordMatchesEntry(w, e) {
-				matches[i] = matchCatalog
-				break
-			}
-		}
-		if matches[i] == matchCatalog {
+	// Iterate over entries once, applying filter inline (no copy) and
+	// scoring each entry.
+	for i := range entries {
+		e := &entries[i]
+		if filter != nil && !filter(e) {
 			continue
 		}
+		var sum float64
+		for j, w := range words {
+			s := scoreWord(w, e)
+			if s > 0 {
+				perWordMatched[j] = true
+			}
+			sum += s
+		}
+		if sum > 0 {
+			hits = append(hits, SearchHit{Entry: e, Score: sum / denom})
+		}
+	}
+
+	// Unmatched words: check server metadata (no entry copy).
+	serverTerms := map[string][]string{}
+	var unmatched []string
+	for j, w := range words {
+		if perWordMatched[j] {
+			continue
+		}
+		matched := false
 		for _, srv := range c.cfg.Get().EnabledServers() {
-			if filter != nil && !filter(ToolEntry{Server: srv.Name}) {
-				// Hidden server: don't emit warnings either.
+			probe := ToolEntry{Server: srv.Name}
+			if filter != nil && !filter(&probe) {
 				continue
 			}
 			if wordMatchesServerMeta(w, srv.Name, srv.Description, srv.Tags) {
-				matches[i] = matchServer
 				serverTerms[srv.Name] = append(serverTerms[srv.Name], w)
+				matched = true
 				break
 			}
 		}
-	}
-
-	for _, m := range matches {
-		if m == matchNone {
-			return SearchResult{}
+		if !matched {
+			unmatched = append(unmatched, w)
 		}
 	}
 
-	var hits []SearchHit
-	for _, e := range entries {
-		var s float64
-		for _, w := range words {
-			s += scoreWord(w, e)
-		}
-		if s > 0 {
-			hits = append(hits, SearchHit{Entry: e, Score: s})
-		}
+	if len(hits) == 0 && len(serverTerms) == 0 {
+		return SearchResult{}
 	}
-	for i := 1; i < len(hits); i++ {
-		for j := i; j > 0 && hits[j].Score > hits[j-1].Score; j-- {
-			hits[j], hits[j-1] = hits[j-1], hits[j]
+
+	// O(n log n): insertion sort was O(n²) and dominated runtime when
+	// several hundred entries matched. Tie-break on Ref for a
+	// deterministic order that does not depend on catalog insertion.
+	slices.SortFunc(hits, func(a, b SearchHit) int {
+		switch {
+		case a.Score > b.Score:
+			return -1
+		case a.Score < b.Score:
+			return 1
+		default:
+			return strings.Compare(a.Entry.Ref, b.Entry.Ref)
 		}
-	}
+	})
 
 	total := len(hits)
 	if limit > 0 && len(hits) > limit {
@@ -304,17 +320,24 @@ func (c *Catalog) Search(query string, limit int, filter func(ToolEntry) bool) S
 			Reason: "matched server metadata but no tools are indexed (catalog unavailable or empty)",
 		})
 	}
+	if len(unmatched) > 0 {
+		warnings = append(warnings, SearchWarning{
+			Terms:  unmatched,
+			Reason: "terms not found in any catalog entry; try the query without them",
+		})
+	}
 
 	return SearchResult{Hits: hits, Warnings: warnings, Total: total}
 }
 
 // allHits returns all entries with uniform score, for the empty-query case.
-func (c *Catalog) allHits(limit int, filter func(ToolEntry) bool) SearchResult {
+func (c *Catalog) allHits(limit int, filter func(*ToolEntry) bool) SearchResult {
 	c.mu.RLock()
 	entries := c.entries
 	c.mu.RUnlock()
 	hits := make([]SearchHit, 0, len(entries))
-	for _, e := range entries {
+	for i := range entries {
+		e := &entries[i]
 		if filter != nil && !filter(e) {
 			continue
 		}
