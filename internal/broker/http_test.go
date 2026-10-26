@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -189,5 +190,127 @@ func TestHTTPBackend_SendsProtocolVersion(t *testing.T) {
 	mock.mu.Unlock()
 	if got != "2025-11-25" {
 		t.Fatalf("protocol version not forwarded: %q", got)
+	}
+}
+
+func TestHTTPBackend_ConcurrentEnsure(t *testing.T) {
+	// Считаем initialize-запросы: они не должны дублироваться при
+	// параллельных Ensure.
+	var initCount atomic.Int64
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+			return
+		}
+		var req struct {
+			ID     any    `json:"id"`
+			Method string `json:"method"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		if req.ID == nil {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		if req.Method == "initialize" {
+			initCount.Add(1)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      req.ID,
+			"result": map[string]any{
+				"protocolVersion": "2025-11-25",
+				"capabilities":    map[string]any{},
+				"serverInfo":      map[string]any{"name": "mock"},
+			},
+		})
+	})
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	cfg := config.ServerConfig{
+		Name:      "mock",
+		Transport: "http",
+		URL:       ts.URL,
+	}
+	b := newHTTPBackend(cfg, 10*1024*1024, logx.New(io.Discard))
+	defer b.Stop()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = b.Ensure(context.Background())
+		}()
+	}
+	wg.Wait()
+
+	if got := initCount.Load(); got != 1 {
+		t.Fatalf("expected 1 initialize for concurrent Ensure, got %d", got)
+	}
+}
+
+func TestHTTPBackend_ReinitializesOn404(t *testing.T) {
+	var initCount atomic.Int64
+	var toolsCalls atomic.Int32
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+			return
+		}
+		var req struct {
+			ID     any    `json:"id"`
+			Method string `json:"method"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		if req.ID == nil {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		if req.Method == "initialize" {
+			initCount.Add(1)
+			w.Header().Set("Mcp-Session-Id", "s1")
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0", "id": req.ID,
+				"result": map[string]any{"protocolVersion": "2025-11-25"},
+			})
+			return
+		}
+		if req.Method == "tools/list" {
+			// First tools/list call fails with 404 (session expired).
+			// Subsequent calls succeed, regardless of whether it is
+			// the same session or a reinitialized one.
+			if toolsCalls.Add(1) == 1 {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"jsonrpc": "2.0", "id": req.ID,
+			"result": map[string]any{"tools": []any{}},
+		})
+	})
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	cfg := config.ServerConfig{Name: "m", Transport: "http", URL: ts.URL}
+	b := newHTTPBackend(cfg, 10*1024*1024, logx.New(io.Discard))
+	defer b.Stop()
+
+	// ListTools: first attempt → 404 (session expired) → reinit → success.
+	if _, err := b.ListTools(context.Background()); err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	if got := initCount.Load(); got < 2 {
+		t.Fatalf("expected reinitialize after 404, got %d inits", got)
 	}
 }

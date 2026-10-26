@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,13 +17,18 @@ import (
 	"github.com/subconscious-labs/lazy-mcp/internal/logx"
 )
 
+var errSessionNotFound = errors.New("session not found")
+
 type httpBackend struct {
 	cfg    config.ServerConfig
 	log    *logx.Logger
 	http   *http.Client
 	maxRaw int
 
+	handshakeMu sync.Mutex // serializes Ensure/doHandshake
+
 	mu                sync.Mutex
+	initialized       bool // true after a successful handshake
 	sessionID         string
 	negotiatedVersion string // set after downstream initialize
 	nextID            int64
@@ -55,7 +61,7 @@ func (h *httpBackend) SetNotificationHandler(nh NotificationHandler) {
 func (h *httpBackend) Alive() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return !h.dead
+	return h.initialized && !h.dead
 }
 
 func (h *httpBackend) LastToolCall() time.Time {
@@ -73,25 +79,42 @@ func (h *httpBackend) LastActivity() time.Time {
 	return h.startedAt
 }
 
-// Ensure инициализирует HTTP-сессию (initialize + запуск SSE).
+// Ensure returns nil if the backend is already initialized. Concurrent
+// Ensure calls do exactly one handshake because handshakeMu serializes
+// the entire path.
 func (h *httpBackend) Ensure(ctx context.Context) error {
+	h.handshakeMu.Lock()
+	defer h.handshakeMu.Unlock()
+
 	h.mu.Lock()
-	if h.sessionID != "" && !h.dead {
-		h.mu.Unlock()
+	ready := h.initialized && !h.dead
+	h.mu.Unlock()
+	if ready {
 		return nil
 	}
+	return h.doHandshake(ctx)
+}
+
+func (h *httpBackend) doHandshake(ctx context.Context) error {
+	h.mu.Lock()
+	h.initialized = false
+	h.sessionID = ""
+	h.negotiatedVersion = ""
+	h.dead = false
 	h.mu.Unlock()
 
-	// 1. Initialize
 	initCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	resp, err := h.request(initCtx, "initialize", map[string]any{
+	resp, err := h.requestRaw(initCtx, "initialize", map[string]any{
 		"protocolVersion": "2025-11-25",
 		"capabilities":    map[string]any{},
 		"clientInfo":      map[string]any{"name": "lazy-mcp", "version": "0.2.2"},
 	})
 	if err != nil {
+		h.mu.Lock()
+		h.dead = true
+		h.mu.Unlock()
 		return fmt.Errorf("initialize: %w", err)
 	}
 
@@ -99,34 +122,44 @@ func (h *httpBackend) Ensure(ctx context.Context) error {
 		ProtocolVersion string `json:"protocolVersion"`
 	}
 	if err := json.Unmarshal(resp, &initRes); err != nil {
+		h.mu.Lock()
+		h.dead = true
+		h.mu.Unlock()
 		return fmt.Errorf("decode initialize response: %w", err)
 	}
+
 	h.mu.Lock()
 	if initRes.ProtocolVersion != "" {
 		h.negotiatedVersion = initRes.ProtocolVersion
 	}
 	h.mu.Unlock()
 
-	// 2. Notifications initialized
 	if err := h.notify(ctx, "notifications/initialized", nil); err != nil {
+		h.mu.Lock()
+		h.dead = true
+		h.mu.Unlock()
 		return fmt.Errorf("initialized notification: %w", err)
 	}
 
-	// 3. Start SSE loop
 	sseCtx, sseCancel := context.WithCancel(context.Background())
 	h.mu.Lock()
+	prevCancel := h.sseCancel
 	h.sseCancel = sseCancel
-	h.dead = false
+	h.initialized = true
 	h.mu.Unlock()
+	if prevCancel != nil {
+		prevCancel()
+	}
 
 	go h.readSSE(sseCtx)
-
 	h.log.Info("http backend ready", "server", h.cfg.Name)
 	return nil
 }
 
-// request отправляет JSON-RPC запрос.
-func (h *httpBackend) request(ctx context.Context, method string, params any) (json.RawMessage, error) {
+// requestRaw sends a single JSON-RPC request and returns the result.
+// It does NOT call Ensure; callers either already ensured or are
+// inside the handshake itself.
+func (h *httpBackend) requestRaw(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	id := h.nextIDAdd()
 	msg := map[string]any{
 		"jsonrpc": "2.0",
@@ -176,6 +209,18 @@ func (h *httpBackend) request(ctx context.Context, method string, params any) (j
 	// buffering the whole thing.
 	limited := io.LimitReader(res.Body, int64(h.maxRaw)+1)
 
+	if res.StatusCode == http.StatusNotFound {
+		h.mu.Lock()
+		hadSession := h.sessionID != ""
+		h.sessionID = ""
+		h.initialized = false
+		h.mu.Unlock()
+		raw, _ := io.ReadAll(limited)
+		if hadSession {
+			return nil, errSessionNotFound
+		}
+		return nil, fmt.Errorf("http 404: %s", string(raw))
+	}
 	if res.StatusCode >= 400 {
 		raw, _ := io.ReadAll(limited)
 		return nil, fmt.Errorf("http %d: %s", res.StatusCode, string(raw))
@@ -202,6 +247,23 @@ func (h *httpBackend) request(ctx context.Context, method string, params any) (j
 	}
 
 	return h.parseJSONBytes(raw, id)
+}
+
+// request ensures the backend is ready, then sends the request. A
+// downstream 404 for a request that carried a session ID means the
+// session expired; we clear local state, reinitialize once, and retry.
+func (h *httpBackend) request(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	if err := h.Ensure(ctx); err != nil {
+		return nil, err
+	}
+	res, err := h.requestRaw(ctx, method, params)
+	if errors.Is(err, errSessionNotFound) {
+		if err := h.Ensure(ctx); err != nil {
+			return nil, err
+		}
+		return h.requestRaw(ctx, method, params)
+	}
+	return res, err
 }
 
 func (h *httpBackend) parseJSONBytes(raw []byte, id int64) (json.RawMessage, error) {
@@ -409,6 +471,7 @@ func (h *httpBackend) Stop() {
 		}()
 	}
 	h.sessionID = ""
+	h.initialized = false
 	h.dead = true
 	h.mu.Unlock()
 	h.log.Info("http backend stopped", "server", h.cfg.Name)
@@ -416,7 +479,7 @@ func (h *httpBackend) Stop() {
 
 func (h *httpBackend) StopIfIdle(ttl time.Duration) bool {
 	h.mu.Lock()
-	if h.dead || h.sessionID == "" {
+	if h.dead || !h.initialized {
 		h.mu.Unlock()
 		return false
 	}
