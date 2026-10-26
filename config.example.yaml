@@ -21,6 +21,8 @@ auth:
   #   - name: elsa
   #     token_sha256: "<64 hex chars>"  # printf %s "$TOKEN" | sha256sum
   #     role: agent
+  #     # Required for role: agent. An empty list is a load error,
+  #     # so an agent with no servers cannot be configured by mistake.
   #     allowed_servers: [git, tasks]
 
 proxy:
@@ -54,6 +56,7 @@ proxy:
   # Cap on summary returned by meta_search (full desc in describe_tool).
   max_summary_len: 200
   # Reject a single raw result larger than this before buffering.
+  # Set to -1 to disable (accept any result size, not recommended).
   max_raw_result_bytes: 10485760
 
   # Default page size for meta_call. 0 = auto-paginate only if > max_result_bytes.

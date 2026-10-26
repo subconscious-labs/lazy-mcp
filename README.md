@@ -86,13 +86,43 @@ See [`config.example.yaml`](config.example.yaml).
 | `initialize_timeout` | `10s` | MCP handshake timeout when starting a backend. |
 | `max_result_bytes` | `262144` | Hard cap; larger results paginate. `-1` = unlimited. |
 | `max_arguments_bytes` | `262144` | Cap on serialized `arguments`. `-1` = unlimited. |
-| `max_summary_len` | `200` | Cap on summary returned by `meta_search`. Full description is in `meta_describe_tool`. |
-| `max_raw_result_bytes` | `10485760` | Reject raw results larger than this before buffering. `0` = unlimited. |
+| `max_summary_len` | `200` | Cap on summary returned by `meta_search`. Full description is in `meta_describe_tool`. `-1` disables. |
+| `max_raw_result_bytes` | `10485760` | Reject raw results larger than this before buffering. `-1` = unlimited. |
 | `default_page_size` | `0` | Pagination size when `page_size` isn't passed. `0` = auto only. |
 | `cursor_ttl` | `5m` | How long paged cursors survive. |
 | `shutdown_timeout` | `5s` | Grace period for in-flight work on SIGTERM. |
 | `deny_dangerous` | `false` | Reject tools from `server.dangerous_tools`. |
 | `deny_destructive` | `false` | Reject tools with `annotations.destructiveHint: true`. |
+
+### `auth`
+
+HTTP transport only (stdio ignores this).
+
+```yaml
+auth:
+  enabled: true
+  users:
+    - name: admin
+      token_sha256: "<64 hex chars>"
+      role: admin
+    - name: elsa
+      token_sha256: "<64 hex chars>"
+      role: agent
+      allowed_servers: [git, tasks]
+```
+
+| Field | Meaning |
+|---|---|
+| `enabled` | Enforce Bearer auth on every HTTP request. |
+| `users[].name` | Label; appears in logs and sessions. |
+| `users[].token_sha256` | SHA-256 of the client's bearer token, hex. |
+| `users[].role` | `admin` (sees every enabled server) or `agent` (sees only `allowed_servers`). |
+| `users[].allowed_servers` | Required for `role: agent`; empty list is a load error. Ignored for `admin`. |
+
+Generate a hash with:
+```sh
+printf %s "$TOKEN" | sha256sum | awk '{print $1}'
+```
 
 ### `servers[]`
 | Key | Meaning |
@@ -146,9 +176,24 @@ make bench        # benchmarks
 Broker tests use a mock MCP server (`internal/broker/testdata/mockmcp`) supporting pagination, annotations, notifications, and error injection.
 
 ## Status
-Implemented: HTTP + stdio transports, auth, per-user policy, config include, hot-reload (SIGHUP + `meta_reload`), SSE notifications, pagination, metrics, graceful shutdown, JSON-RPC compliance (`ping`, `logging`, exact IDs).
 
-Not implemented: OAuth 2.1, semantic search, `resources/*`, `prompts/*`.
+Implemented:
+- HTTP + stdio transports; HTTP is at parity with stdio on pagination, `structuredContent`, non-text content markers and JSON-RPC client-error classification.
+- Bearer auth, per-user policy (`allowed_servers`, `allowed_tools`, `denied_tools`), `deny_dangerous` / `deny_destructive` gates.
+- Config include (`conf.d/*.yaml`) and `${...}` substitutions.
+- Hot-reload via SIGHUP or `meta_reload`; transactional (config is published only after the broker pool reconciles) and replays session ACLs on open SSE streams.
+- SSE notifications (`notifications/message`) with ACL filtering; multi-line SSE events parsed correctly.
+- Byte-level pagination with UTF-8-safe cuts, idempotent cursors, per-owner cursors.
+- Envelope validation: `jsonrpc` must be `"2.0"`; `id` must be string or number; id-less messages are honoured only for `notifications/*`.
+- `MCP-Protocol-Version` validated on incoming HTTP requests and forwarded to downstream backends after `initialize`.
+- Per-generation process isolation: a timed-out request cannot leak its write into a restarted backend; `Stop` kills the whole process group.
+- Metrics (tools, sessions, notifications, auth failures), structured JSONL logs, graceful shutdown.
+- JSON-RPC compliance: `ping`, `logging/setLevel`, exact integer IDs, parse error responses.
+
+Not implemented:
+- OAuth 2.1 / dynamic client registration (Bearer only).
+- Semantic search (keyword today).
+- `resources/*`, `prompts/*`.
 
 ## License
 
