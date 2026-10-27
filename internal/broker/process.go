@@ -66,9 +66,10 @@ func (r *processRun) markClosed() {
 }
 
 type backendProcess struct {
-	cfg    config.ServerConfig
-	log    *logx.Logger
-	maxRaw int // hard cap for a single inbound frame
+	cfg         config.ServerConfig
+	log         *logx.Logger
+	maxRaw      int // hard cap for a single inbound frame
+	initTimeout time.Duration
 
 	lifecycleMu sync.Mutex
 	mu          sync.Mutex
@@ -82,8 +83,11 @@ type backendProcess struct {
 	notifHandler NotificationHandler
 }
 
-func newProcessBackend(cfg config.ServerConfig, maxRaw int, log *logx.Logger) *backendProcess {
-	return &backendProcess{cfg: cfg, log: log, maxRaw: maxRaw}
+func newProcessBackend(cfg config.ServerConfig, maxRaw int, initTimeout time.Duration, log *logx.Logger) *backendProcess {
+	if initTimeout <= 0 {
+		initTimeout = 10 * time.Second
+	}
+	return &backendProcess{cfg: cfg, log: log, maxRaw: maxRaw, initTimeout: initTimeout}
 }
 
 func (p *backendProcess) SetNotificationHandler(h NotificationHandler) {
@@ -113,6 +117,14 @@ func (p *backendProcess) Ensure(ctx context.Context) error {
 }
 
 func (p *backendProcess) start(ctx context.Context) error {
+	// Prefer the caller's deadline (Broker.Ensure wraps ctx with
+	// proxy.initialize_timeout). Fall back to the backend's configured
+	// timeout when no deadline is present (tests, direct callers).
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, p.initTimeout)
+		defer cancel()
+	}
 	cmd := exec.Command(p.cfg.Command, p.cfg.Args...)
 	cmd.Env = buildEnv(p.cfg)
 	cmd.Stderr = os.Stderr
@@ -150,13 +162,11 @@ func (p *backendProcess) start(ctx context.Context) error {
 	p.mu.Unlock()
 
 	p.log.Info("backend started", "server", p.cfg.Name, "pid", cmd.Process.Pid, "gen", gen)
+	p.log.Info("backend starting handshake", "server", p.cfg.Name, "gen", gen)
 
 	go p.readLoop(run, stdout)
 
-	initCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	if _, err := p.requestRun(initCtx, run, "initialize", map[string]any{
+	if _, err := p.requestRun(ctx, run, "initialize", map[string]any{
 		"protocolVersion": "2024-11-05",
 		"capabilities":    map[string]any{},
 		"clientInfo":      map[string]any{"name": "lazy-mcp", "version": "0.1.0"},

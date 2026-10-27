@@ -19,10 +19,11 @@ import (
 var errSessionNotFound = errors.New("session not found")
 
 type httpBackend struct {
-	cfg    config.ServerConfig
-	log    *logx.Logger
-	http   *http.Client
-	maxRaw int
+	cfg         config.ServerConfig
+	log         *logx.Logger
+	http        *http.Client
+	maxRaw      int
+	initTimeout time.Duration
 
 	handshakeMu sync.Mutex // serializes Ensure/doHandshake
 
@@ -39,15 +40,16 @@ type httpBackend struct {
 	sseCancel context.CancelFunc
 }
 
-func newHTTPBackend(cfg config.ServerConfig, maxRaw int, log *logx.Logger) *httpBackend {
+func newHTTPBackend(cfg config.ServerConfig, maxRaw int, initTimeout time.Duration, log *logx.Logger) *httpBackend {
+	if initTimeout <= 0 {
+		initTimeout = 10 * time.Second
+	}
 	return &httpBackend{
-		cfg:    cfg,
-		log:    log,
-		maxRaw: maxRaw,
-		http: &http.Client{
-			Timeout: 0, // стрим не должен таймаутиться, таймауты задаются через ctx
-		},
-		startedAt: time.Now(),
+		cfg:         cfg,
+		log:         log,
+		maxRaw:      maxRaw,
+		initTimeout: initTimeout,
+		http:        &http.Client{Timeout: 0},
 	}
 }
 
@@ -95,6 +97,12 @@ func (h *httpBackend) Ensure(ctx context.Context) error {
 }
 
 func (h *httpBackend) doHandshake(ctx context.Context) error {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, h.initTimeout)
+		defer cancel()
+	}
+
 	h.mu.Lock()
 	h.initialized = false
 	h.sessionID = ""
@@ -102,10 +110,7 @@ func (h *httpBackend) doHandshake(ctx context.Context) error {
 	h.dead = false
 	h.mu.Unlock()
 
-	initCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	resp, err := h.requestRaw(initCtx, "initialize", map[string]any{
+	resp, err := h.requestRaw(ctx, "initialize", map[string]any{
 		"protocolVersion": "2025-11-25",
 		"capabilities":    map[string]any{},
 		"clientInfo":      map[string]any{"name": "lazy-mcp", "version": "0.2.2"},

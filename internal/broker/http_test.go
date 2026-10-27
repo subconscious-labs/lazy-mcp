@@ -147,7 +147,7 @@ func TestHTTPBackend_Lifecycle(t *testing.T) {
 		URL:       ts.URL,
 	}
 
-	b := newHTTPBackend(cfg, 10*1024*1024, logx.New(io.Discard))
+	b := newHTTPBackend(cfg, 10*1024*1024, 2*time.Second, logx.New(io.Discard))
 	defer b.Stop()
 
 	// Notifications
@@ -197,7 +197,7 @@ func TestHTTPBackend_RejectsOversizedResponse(_ *testing.T) {
 		Transport: "http",
 		URL:       ts.URL,
 	}
-	b := newHTTPBackend(cfg, 100, logx.New(io.Discard))
+	b := newHTTPBackend(cfg, 100, 2*time.Second, logx.New(io.Discard))
 	defer b.Stop()
 
 	// A 10 MiB tools/call result should be rejected without buffering.
@@ -221,7 +221,7 @@ func TestHTTPBackend_SendsProtocolVersion(t *testing.T) {
 		Transport: "http",
 		URL:       ts.URL,
 	}
-	b := newHTTPBackend(cfg, 10*1024*1024, logx.New(io.Discard))
+	b := newHTTPBackend(cfg, 10*1024*1024, 2*time.Second, logx.New(io.Discard))
 	defer b.Stop()
 
 	if _, err := b.ListTools(context.Background()); err != nil {
@@ -279,7 +279,7 @@ func TestHTTPBackend_ConcurrentEnsure(t *testing.T) {
 		Transport: "http",
 		URL:       ts.URL,
 	}
-	b := newHTTPBackend(cfg, 10*1024*1024, logx.New(io.Discard))
+	b := newHTTPBackend(cfg, 10*1024*1024, 2*time.Second, logx.New(io.Discard))
 	defer b.Stop()
 
 	var wg sync.WaitGroup
@@ -287,7 +287,9 @@ func TestHTTPBackend_ConcurrentEnsure(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = b.Ensure(context.Background())
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_ = b.Ensure(ctx)
 		}()
 	}
 	wg.Wait()
@@ -346,7 +348,7 @@ func TestHTTPBackend_ReinitializesOn404(t *testing.T) {
 	defer ts.Close()
 
 	cfg := config.ServerConfig{Name: "m", Transport: "http", URL: ts.URL}
-	b := newHTTPBackend(cfg, 10*1024*1024, logx.New(io.Discard))
+	b := newHTTPBackend(cfg, 10*1024*1024, 2*time.Second, logx.New(io.Discard))
 	defer b.Stop()
 
 	// ListTools: first attempt → 404 (session expired) → reinit → success.
@@ -364,7 +366,7 @@ func TestHTTPBackend_ToolsListPagination(t *testing.T) {
 	defer ts.Close()
 
 	cfg := config.ServerConfig{Name: "m", Transport: "http", URL: ts.URL}
-	b := newHTTPBackend(cfg, 10*1024*1024, logx.New(io.Discard))
+	b := newHTTPBackend(cfg, 10*1024*1024, 2*time.Second, logx.New(io.Discard))
 	defer b.Stop()
 
 	tools, err := b.ListTools(context.Background())
@@ -382,7 +384,7 @@ func TestHTTPBackend_StructuredContent(t *testing.T) {
 	defer ts.Close()
 
 	cfg := config.ServerConfig{Name: "m", Transport: "http", URL: ts.URL}
-	b := newHTTPBackend(cfg, 10*1024*1024, logx.New(io.Discard))
+	b := newHTTPBackend(cfg, 10*1024*1024, 2*time.Second, logx.New(io.Discard))
 	defer b.Stop()
 
 	res, err := b.CallTool(context.Background(), "t", nil)
@@ -400,7 +402,7 @@ func TestHTTPBackend_NonTextMarked(t *testing.T) {
 	defer ts.Close()
 
 	cfg := config.ServerConfig{Name: "m", Transport: "http", URL: ts.URL}
-	b := newHTTPBackend(cfg, 10*1024*1024, logx.New(io.Discard))
+	b := newHTTPBackend(cfg, 10*1024*1024, 2*time.Second, logx.New(io.Discard))
 	defer b.Stop()
 
 	res, err := b.CallTool(context.Background(), "t", nil)
@@ -448,7 +450,7 @@ func TestHTTPBackend_ClientErrorClassification(t *testing.T) {
 	defer ts.Close()
 
 	cfg := config.ServerConfig{Name: "m", Transport: "http", URL: ts.URL}
-	b := newHTTPBackend(cfg, 10*1024*1024, logx.New(io.Discard))
+	b := newHTTPBackend(cfg, 10*1024*1024, 2*time.Second, logx.New(io.Discard))
 	defer b.Stop()
 
 	_, err := b.CallTool(context.Background(), "t", nil)

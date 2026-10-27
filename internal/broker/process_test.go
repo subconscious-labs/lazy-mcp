@@ -37,10 +37,12 @@ func TestStop_KillsChildren(t *testing.T) {
 		Transport: "stdio",
 	}
 
-	p := newProcessBackend(cfg, 1024*1024, logx.New(io.Discard))
-	if err := p.Ensure(context.Background()); err != nil {
-		// Эта команда не отвечает на initialize, поэтому Ensure
-		// вернёт ошибку — это нормально, процесс уже запущен.
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	p := newProcessBackend(cfg, 1024*1024, 500*time.Millisecond, logx.New(io.Discard))
+	if err := p.Ensure(ctx); err != nil {
+		// Expected: the shell doesn't respond to initialize.
 		_ = err
 	}
 
