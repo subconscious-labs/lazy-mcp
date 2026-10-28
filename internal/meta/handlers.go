@@ -393,6 +393,8 @@ func (h *Handlers) ListServers(ctx context.Context, args map[string]any) (string
 		Tags         []string `json:"tags"`
 		Enabled      bool     `json:"enabled"`
 		Autostart    bool     `json:"autostart"`
+		State        string   `json:"state"`
+		Transport    string   `json:"transport"`
 		Running      bool     `json:"running"`
 		Circuit      string   `json:"circuit"`
 		LastToolCall string   `json:"last_tool_call,omitempty"`
@@ -408,12 +410,16 @@ func (h *Handlers) ListServers(ctx context.Context, args map[string]any) (string
 			Autostart:   s.Autostart,
 		}
 		if !s.Enabled {
+			item.State = "disabled"
+			item.Transport = s.Transport
 			item.Circuit = "disabled"
 			out = append(out, item)
 			continue
 		}
 		if h.brok != nil {
 			st := h.brok.Status(s.Name)
+			item.State = st.State
+			item.Transport = st.Transport
 			item.Running = st.Running
 			item.Circuit = st.Circuit
 			item.LastError = st.LastError

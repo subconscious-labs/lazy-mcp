@@ -296,6 +296,8 @@ func (b *Broker) CircuitState(serverName string) string {
 // ServerStatus summarizes runtime state of a single backend.
 type ServerStatus struct {
 	Name         string
+	State        string // running | initialized | reaped | errored | never_started | disabled | unknown
+	Transport    string
 	Running      bool
 	Circuit      string
 	LastToolCall time.Time
@@ -303,14 +305,43 @@ type ServerStatus struct {
 }
 
 // Status returns a snapshot of runtime state for serverName.
+//
+// `State` is the authoritative health signal:
+//
+//	running       — stdio process alive (probe: Alive())
+//	initialized   — http backend, session cached; verified on next call
+//	reaped        — was running, stopped by idle_ttl; next call restarts
+//	errored       — circuit open/half-open, or process gone
+//	never_started — never invoked
+//	disabled      — enabled: false in config
+//	unknown       — not in config (only for callers that ask about typos)
+//
+// `Running` is kept for compatibility. For http backends it means
+// "we successfully initialized at some point and have not seen a 404
+// since"; it is not a live probe.
 func (b *Broker) Status(serverName string) ServerStatus {
+	cfg := b.cfg.Get()
+	srv, exists := cfg.Server(serverName)
+	if !exists {
+		return ServerStatus{Name: serverName, State: "unknown"}
+	}
+	if !srv.Enabled {
+		return ServerStatus{
+			Name:      serverName,
+			State:     "disabled",
+			Transport: srv.Transport,
+			Circuit:   "disabled",
+		}
+	}
+
 	b.mu.Lock()
 	proc := b.pool[serverName]
 	b.mu.Unlock()
 
 	st := ServerStatus{
-		Name:    serverName,
-		Circuit: b.CircuitState(serverName),
+		Name:      serverName,
+		Transport: srv.Transport,
+		Circuit:   b.CircuitState(serverName),
 	}
 	if c := b.circuitFor(serverName); c != nil {
 		if e := c.lastError(); e != nil {
@@ -320,6 +351,22 @@ func (b *Broker) Status(serverName string) ServerStatus {
 	if proc != nil {
 		st.Running = proc.Alive()
 		st.LastToolCall = proc.LastToolCall()
+	}
+
+	switch {
+	case st.Circuit == "open" || st.Circuit == "half-open":
+		st.State = "errored"
+	case proc == nil && st.LastToolCall.IsZero():
+		st.State = "never_started"
+	case proc == nil:
+		st.State = "reaped"
+	case srv.Transport == "http":
+		// HTTP Alive() is a cached belief, not a live probe.
+		st.State = "initialized"
+	case st.Running:
+		st.State = "running"
+	default:
+		st.State = "errored"
 	}
 	return st
 }

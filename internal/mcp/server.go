@@ -272,7 +272,7 @@ func (s *Server) toolManifest(prefix string) []map[string]any {
 		},
 		{
 			"name":        prefix + "_list_servers",
-			"description": "List MCP backend servers with runtime status (running, circuit state, last tool call). By default only enabled servers are shown; pass include_disabled:true to see the full registry.",
+			"description": "List MCP backend servers with runtime status. Each entry has {state, transport, running, circuit, last_tool_call?, last_error?}. state is the authoritative health signal: 'running' (stdio backend, process alive), 'initialized' (HTTP backend, session cached — will be verified on the next call), 'reaped' (was running, stopped by idle_ttl; next call restarts it), 'errored' (circuit open/half-open, or process gone), 'never_started', 'disabled'. For HTTP backends running:true means we have not seen a 404 since the last successful initialize; it is not a live probe. By default only enabled servers are shown; pass include_disabled:true to see the full registry.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{

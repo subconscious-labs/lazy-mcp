@@ -16,6 +16,7 @@ import (
 
 	"github.com/subconscious-labs/lazy-mcp/internal/config"
 	"github.com/subconscious-labs/lazy-mcp/internal/logx"
+	"github.com/subconscious-labs/lazy-mcp/internal/policy"
 )
 
 type mockHTTPMCP struct {
@@ -456,5 +457,65 @@ func TestHTTPBackend_ClientErrorClassification(t *testing.T) {
 	_, err := b.CallTool(context.Background(), "t", nil)
 	if !errors.Is(err, ErrRPCClientError) {
 		t.Fatalf("expected ErrRPCClientError, got %v", err)
+	}
+}
+
+func TestStatus_HTTPIsInitialized(t *testing.T) {
+	mock := &mockHTTPMCP{tools: []string{"t1"}}
+	ts := httptest.NewServer(mock)
+	defer ts.Close()
+
+	cfg := &config.Config{
+		Proxy: config.ProxyConfig{
+			ToolPrefix:        "meta",
+			ExecTimeout:       time.Second,
+			InitializeTimeout: 2 * time.Second,
+		},
+		Servers: []config.ServerConfig{{
+			Name:      "httpx",
+			Transport: "http",
+			URL:       ts.URL,
+			Enabled:   true,
+		}},
+	}
+	holder := config.NewHolder(cfg)
+	b := New(holder, policy.New(holder), logx.New(io.Discard))
+	defer b.StopAll()
+
+	// Before init: never_started.
+	if got := b.Status("httpx").State; got != "never_started" {
+		t.Fatalf("before init: got %q want never_started", got)
+	}
+
+	if _, err := b.ListTools(context.Background(), "httpx"); err != nil {
+		t.Fatal(err)
+	}
+
+	st := b.Status("httpx")
+	if st.State != "initialized" {
+		t.Fatalf("after init: got %q want initialized", st.State)
+	}
+	if !st.Running {
+		t.Fatalf("running should be true after successful init")
+	}
+	if st.Transport != "http" {
+		t.Fatalf("transport: %q want http", st.Transport)
+	}
+}
+
+func TestStatus_StdioIsRunning(t *testing.T) {
+	b := newTestBroker(t, []config.ServerConfig{
+		testServer("mock", nil),
+	}, brokerOpts{})
+
+	if _, err := b.ListTools(context.Background(), "mock"); err != nil {
+		t.Fatal(err)
+	}
+	st := b.Status("mock")
+	if st.State != "running" {
+		t.Fatalf("got %q want running", st.State)
+	}
+	if st.Transport != "stdio" {
+		t.Fatalf("transport: %q want stdio", st.Transport)
 	}
 }

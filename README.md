@@ -147,7 +147,12 @@ printf %s "$TOKEN" | sha256sum | awk '{print $1}'
 - `meta_search` — `{hits, total, has_more, warnings?}`. Each hit carries `score` in `[0,1]`; a query word that matches nothing produces a warning instead of dropping the whole query.
 - `meta_call` — supports pagination (`has_more`, `next_cursor`).
 - `meta_describe_tool` — full schema, `dangerous`, `annotations`.
-- `meta_list_servers` — registry + runtime status.
+- `meta_list_servers` — registry + runtime status. Each entry carries
+  `state`: `running` (stdio, process alive), `initialized` (HTTP,
+  session cached — verified on next call), `reaped` (was running,
+  stopped by idle_ttl), `errored` (circuit open or process gone),
+  `never_started`, `disabled`. Use `state` for health; `running:true`
+  on HTTP means "no 404 since initialize", not a live probe.
 - `meta_whoami` — identity, role, visible servers.
 - `meta_reload` — re-read config (admin only, 5s cooldown).
 

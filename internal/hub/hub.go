@@ -336,6 +336,9 @@ func (h *Hub) sessionForPrincipal(w http.ResponseWriter, r *http.Request) *sessS
 	st := h.sessions[id]
 	h.mu.RUnlock()
 	if st == nil {
+		h.log.Info("hub: session expired or unknown",
+			"id", id, "user", u.Name,
+			"hint", "client should reinitialize with a new session")
 		http.Error(w, "session not found", http.StatusNotFound)
 		return nil
 	}
