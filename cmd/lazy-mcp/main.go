@@ -157,6 +157,7 @@ func main() {
 
 	// HTTP hub.
 	var hubErrCh chan error
+	var runErr chan error
 	if runHTTP {
 		hubSrv = hub.New(holder, srv, log)
 		brok.SetNotificationHandler(func(server, method string, params json.RawMessage) {
@@ -196,11 +197,9 @@ func main() {
 	}()
 
 	if hubSrv != nil {
-		hubErrCh = make(chan error, 1)
 		go func() { hubErrCh <- hubSrv.Run(ctx) }()
 	}
 
-	var runErr chan error
 	if runStdio {
 		runErr = make(chan error, 1)
 		go func() { runErr <- srv.Run(ctx, os.Stdin, os.Stdout) }()
@@ -210,47 +209,52 @@ func main() {
 
 	exitCode := 0
 
-	if runStdio {
-		// Legacy path: stdio is the primary transport. Exit when it
-		// EOFs (client disconnected) or when ctx is cancelled.
-		select {
-		case err := <-runErr:
-			if err != nil && !errors.Is(err, context.Canceled) {
-				log.Error("server error", "err", err)
-				exitCode = 1
-			} else {
-				log.Info("server exited")
-			}
-		case <-ctx.Done():
-			grace := cfg.Proxy.ShutdownTimeout
-			log.Info("shutdown: draining in-flight work", "grace", grace.String())
-			select {
-			case err := <-runErr:
-				if err != nil && !errors.Is(err, context.Canceled) {
-					log.Warn("server error during drain", "err", err)
-				}
-				log.Info("shutdown: drained cleanly")
-			case <-time.After(grace):
-				log.Warn("shutdown: grace period expired")
-			}
+	select {
+	case err := <-hubErrCh:
+		// Only reachable when hub is running. Fatal hub error or clean
+		// shutdown caused by ctx.Done() from a signal.
+		if err != nil && !errors.Is(err, context.Canceled) {
+			log.Error("hub error", "err", err)
+			exitCode = 1
+		} else {
+			log.Info("hub exited")
 		}
-	} else {
-		// HTTP-only path: daemon. Exit on SIGTERM/SIGINT or fatal hub error.
-		select {
-		case err := <-hubErrCh:
-			if err != nil && !errors.Is(err, context.Canceled) {
-				log.Error("hub error", "err", err)
-				exitCode = 1
-			} else {
-				log.Info("hub exited")
-			}
-		case <-ctx.Done():
-			// hub.Run already calls Shutdown on ctx.Done; just wait briefly
-			// for its graceful stop.
+
+	case err := <-runErr:
+		// Only reachable when stdio is running.
+		if err != nil && !errors.Is(err, context.Canceled) {
+			log.Error("stdio server error", "err", err)
+			exitCode = 1
+		} else {
+			log.Info("stdio server exited")
+		}
+
+	case <-ctx.Done():
+		grace := cfg.Proxy.ShutdownTimeout
+		// hub.Run internally does: close SSE -> httpSrv.Shutdown(grace).
+		// Wait long enough for that whole sequence, plus a margin, so
+		// we never os.Exit while hub still has POSTs in flight.
+		waitFor := grace + 2*time.Second
+		log.Info("shutdown: draining in-flight work",
+			"grace", grace.String(), "wait_for", waitFor.String())
+
+		drainCtx, drainCancel := context.WithTimeout(context.Background(), waitFor)
+		defer drainCancel()
+
+		if hubSrv != nil {
 			select {
 			case <-hubErrCh:
-			case <-time.After(cfg.Proxy.ShutdownTimeout):
-				log.Warn("shutdown: grace period expired")
+				log.Info("shutdown: hub drained cleanly")
+			case <-drainCtx.Done():
+				log.Warn("shutdown: grace period expired, forcing exit")
+			}
+		}
+		if runStdio {
+			select {
+			case <-runErr:
+				log.Info("shutdown: stdio drained cleanly")
+			case <-drainCtx.Done():
+				log.Warn("shutdown: stdio grace period expired")
 			}
 		}
 	}

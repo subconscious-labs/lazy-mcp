@@ -25,11 +25,11 @@ import (
 
 // Hub is the HTTP MCP frontend.
 type Hub struct {
-	cfg *config.Holder
-	mcp *mcp.Server
-	log *logx.Logger
-
-	httpSrv *http.Server
+	cfg             *config.Holder
+	mcp             *mcp.Server
+	log             *logx.Logger
+	httpSrv         *http.Server
+	shutdownTimeout time.Duration
 
 	mu       sync.RWMutex
 	sessions map[string]*sessState
@@ -52,11 +52,16 @@ func (h *Hub) metricsAuthFailures() {
 
 // New builds a Hub. It binds to cfg.Proxy.HTTP.Addr on Run.
 func New(cfg *config.Holder, srv *mcp.Server, log *logx.Logger) *Hub {
+	shutdownTimeout := cfg.Get().Proxy.ShutdownTimeout
+	if shutdownTimeout <= 0 {
+		shutdownTimeout = 5 * time.Second
+	}
 	h := &Hub{
-		cfg:      cfg,
-		mcp:      srv,
-		log:      log,
-		sessions: make(map[string]*sessState),
+		cfg:             cfg,
+		mcp:             srv,
+		log:             log,
+		sessions:        make(map[string]*sessState),
+		shutdownTimeout: shutdownTimeout,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", h.handleHealth)
@@ -93,11 +98,19 @@ func (h *Hub) Run(ctx context.Context) error {
 	}
 }
 
+// shutdown drains the hub. Order matters:
+//
+//  1. Close every SSE stream first. st.close() unblocks the handler
+//     loop in handleSSE; the handler returns, net/http writes the
+//     final chunk (0\r\n\r\n) and closes the TCP connection cleanly.
+//     Clients see a proper EOF instead of "incomplete chunked read".
+//  2. Then httpSrv.Shutdown(ctx) — now it only waits for in-flight
+//     POSTs, bounded by shutdownTimeout. SSE is already gone and
+//     cannot block it.
+//
+// Returning from here means: all POSTs either completed or exhausted
+// the grace period. main.go can call os.Exit safely.
 func (h *Hub) shutdown() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	_ = h.httpSrv.Shutdown(ctx)
-
 	h.mu.Lock()
 	states := make([]*sessState, 0, len(h.sessions))
 	for _, st := range h.sessions {
@@ -105,9 +118,20 @@ func (h *Hub) shutdown() error {
 	}
 	h.sessions = make(map[string]*sessState)
 	h.mu.Unlock()
+	observability.Default().SetSessionsActive(0)
 
 	for _, st := range states {
 		st.close()
+	}
+	if len(states) > 0 {
+		h.log.Info("hub: closed SSE streams", "count", len(states))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), h.shutdownTimeout)
+	defer cancel()
+	if err := h.httpSrv.Shutdown(ctx); err != nil {
+		h.log.Warn("hub: shutdown grace period expired; some requests were in flight", "err", err)
+		return err
 	}
 	return nil
 }

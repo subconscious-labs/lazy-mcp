@@ -14,7 +14,7 @@ Restart=on-failure
 RestartSec=5s
 
 KillSignal=SIGTERM
-TimeoutStopSec=20
+TimeoutStopSec=65
 
 # Hardening (adjust paths to your layout)
 NoNewPrivileges=yes

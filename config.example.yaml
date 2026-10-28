@@ -64,7 +64,7 @@ proxy:
   # How long paged cursors survive in memory.
   cursor_ttl: 5m
   # Grace period for in-flight requests on SIGTERM.
-  shutdown_timeout: 5s
+  shutdown_timeout: 50s
 
   # Prometheus textfile metrics for node_exporter.
   metrics_file: ""
