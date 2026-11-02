@@ -232,7 +232,7 @@ func TestAuthorize_DoesNotConsume(t *testing.T) {
 		Servers: []config.ServerConfig{{Name: "s", Enabled: true}},
 	})
 
-	// 100 Authorize calls — no tokens consumed.
+	// 100 Authorize calls - no tokens consumed.
 	for i := 0; i < 100; i++ {
 		if err := p.Authorize("", "s", "a"); err != nil {
 			t.Fatalf("Authorize %d: %v", i, err)

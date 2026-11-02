@@ -287,7 +287,7 @@ func TestPageStore_IdempotentCursor(t *testing.T) {
 		t.Fatal("expected multi-page")
 	}
 
-	// Fetch page 2 twice — must yield the same bytes.
+	// Fetch page 2 twice - must yield the same bytes.
 	page1, next1, _, _, _, ok := ps.Next(cur, "")
 	if !ok {
 		t.Fatal("first Next failed")

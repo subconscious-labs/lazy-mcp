@@ -111,7 +111,7 @@ jobs:
 
           if [ -z "$PREV" ]; then
             RANGE="$CURRENT"
-            HEADER="_First release — all commits:_"
+            HEADER="_First release - all commits:_"
           else
             RANGE="${PREV}..${CURRENT}"
             HEADER="_Changes since ${PREV}:_"

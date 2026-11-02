@@ -143,7 +143,7 @@ func TestApplyConfig_ReenabledServerStartsLazily(t *testing.T) {
 	b.cfg.Swap(newCfg)
 	b.ApplyConfig(oldCfg, newCfg)
 
-	// Still not running — lazy start happens on Ensure.
+	// Still not running - lazy start happens on Ensure.
 	if b.Status("a").Running {
 		t.Fatalf("re-enabled server should not start until first call")
 	}

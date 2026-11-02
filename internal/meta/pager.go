@@ -25,7 +25,7 @@ type pagedResult struct {
 //
 // A cursor has the form "<session-id>.<page-index>" where page-index is
 // 1-based. The first page is returned directly by Store; subsequent pages
-// are addressed by cursor and are idempotent — repeating a request with
+// are addressed by cursor and are idempotent - repeating a request with
 // the same cursor yields the same page.
 type PageStore struct {
 	mu      sync.Mutex

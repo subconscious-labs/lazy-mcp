@@ -4,7 +4,7 @@ import "strings"
 
 // scoreWord returns a per-word relevance in [0, 1] for one query word
 // against e. Zero means no match. Values are calibrated for the human
-// reader (and the model), not for ranking precision — ranking only
+// reader (and the model), not for ranking precision - ranking only
 // needs monotonicity, which is preserved.
 func scoreWord(w string, e *ToolEntry) float64 {
 	if w == "" {

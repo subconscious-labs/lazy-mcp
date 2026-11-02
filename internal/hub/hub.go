@@ -104,7 +104,7 @@ func (h *Hub) Run(ctx context.Context) error {
 //     loop in handleSSE; the handler returns, net/http writes the
 //     final chunk (0\r\n\r\n) and closes the TCP connection cleanly.
 //     Clients see a proper EOF instead of "incomplete chunked read".
-//  2. Then httpSrv.Shutdown(ctx) — now it only waits for in-flight
+//  2. Then httpSrv.Shutdown(ctx) - now it only waits for in-flight
 //     POSTs, bounded by shutdownTimeout. SSE is already gone and
 //     cannot block it.
 //

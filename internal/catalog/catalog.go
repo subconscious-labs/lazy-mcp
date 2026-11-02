@@ -56,7 +56,7 @@ type SearchHit struct {
 }
 
 // SearchWarning describes a query term that matched server metadata but no
-// catalog entry — usually because the server's catalog is empty or stale.
+// catalog entry - usually because the server's catalog is empty or stale.
 type SearchWarning struct {
 	Server string   `json:"server"`
 	Terms  []string `json:"terms"`

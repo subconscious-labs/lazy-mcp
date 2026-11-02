@@ -168,7 +168,7 @@ func main() {
 		})
 	}
 
-	// Signals (SIGHUP reload + INT/TERM shutdown) — как было.
+	// Signals (SIGHUP reload + INT/TERM shutdown)
 	sigCh := make(chan os.Signal, 4)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	go func() {
@@ -266,7 +266,7 @@ func main() {
 
 // reload loads cfgPath, applies the new config, and returns any
 // operator-facing warnings (duplicate servers, fields that need a
-// full restart). Errors mean the config was not applied — the old
+// full restart). Errors mean the config was not applied - the old
 // configuration stays live.
 func reload(cfgPath string, holder *config.Holder, pol *policy.Policy, brok *broker.Broker, cat *catalog.Catalog, hubSrv *hub.Hub, log *logx.Logger) ([]string, error) {
 	reloadMutex.Lock()

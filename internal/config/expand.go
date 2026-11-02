@@ -173,7 +173,7 @@ func (e *expander) resolve(inner string) (string, error) {
 	// verbatim into the env file (e.g. FORGEJOMCP_TOKEN=${FORGEJOMCP_TOKEN:?...}).
 	if strings.Contains(val, "${") {
 		return "", fmt.Errorf(
-			"environment variable %s contains ${...} (looks like an unexpanded template): %q — "+
+			"environment variable %s contains ${...} (looks like an unexpanded template): %q - "+
 				"set the variable to the real value, not the template from config.yaml",
 			name, val)
 	}

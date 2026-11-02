@@ -308,13 +308,13 @@ type ServerStatus struct {
 //
 // `State` is the authoritative health signal:
 //
-//	running       — stdio process alive (probe: Alive())
-//	initialized   — http backend, session cached; verified on next call
-//	reaped        — was running, stopped by idle_ttl; next call restarts
-//	errored       — circuit open/half-open, or process gone
-//	never_started — never invoked
-//	disabled      — enabled: false in config
-//	unknown       — not in config (only for callers that ask about typos)
+//	running       - stdio process alive (probe: Alive())
+//	initialized   - http backend, session cached; verified on next call
+//	reaped        - was running, stopped by idle_ttl; next call restarts
+//	errored       - circuit open/half-open, or process gone
+//	never_started - never invoked
+//	disabled      - enabled: false in config
+//	unknown       - not in config (only for callers that ask about typos)
 //
 // `Running` is kept for compatibility. For http backends it means
 // "we successfully initialized at some point and have not seen a 404

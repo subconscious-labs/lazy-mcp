@@ -138,30 +138,30 @@ printf %s "$TOKEN" | sha256sum | awk '{print $1}'
 | `dangerous_tools` | Flagged in `describe_tool`; rejected when `deny_dangerous`. |
 
 ### `include`
-`include: ["conf.d/*.yaml"]` — merges servers by name (last wins). `proxy` and `auth` must be in the top-level file.
+`include: ["conf.d/*.yaml"]` - merges servers by name (last wins). `proxy` and `auth` must be in the top-level file.
 
 ### Substitutions
 `${VAR}`, `${VAR:-default}`, `${VAR:?msg}`, `${file:/path}`, `$$` for literal `$`. Evaluated after YAML parsing. Cyclic references are rejected at load time.
 
 ## Meta-tools
-- `meta_search` — `{hits, total, has_more, warnings?}`. Each hit carries `score` in `[0,1]`; a query word that matches nothing produces a warning instead of dropping the whole query.
-- `meta_call` — supports pagination (`has_more`, `next_cursor`).
-- `meta_describe_tool` — full schema, `dangerous`, `annotations`.
-- `meta_list_servers` — registry + runtime status. Each entry carries
+- `meta_search` - `{hits, total, has_more, warnings?}`. Each hit carries `score` in `[0,1]`; a query word that matches nothing produces a warning instead of dropping the whole query.
+- `meta_call` - supports pagination (`has_more`, `next_cursor`).
+- `meta_describe_tool` - full schema, `dangerous`, `annotations`.
+- `meta_list_servers` - registry + runtime status. Each entry carries
   `state`: `running` (stdio, process alive), `initialized` (HTTP,
-  session cached — verified on next call), `reaped` (was running,
+  session cached - verified on next call), `reaped` (was running,
   stopped by idle_ttl), `errored` (circuit open or process gone),
   `never_started`, `disabled`. Use `state` for health; `running:true`
   on HTTP means "no 404 since initialize", not a live probe.
-- `meta_whoami` — identity, role, visible servers.
-- `meta_reload` — re-read config (admin only, 5s cooldown).
+- `meta_whoami` - identity, role, visible servers.
+- `meta_reload` - re-read config (admin only, 5s cooldown).
 
 ### Pagination
 Pages are **byte-level slices** of the full result. Concatenate them verbatim; individual pages are not necessarily valid JSON. `result` is embedded as an object/array when the backend returned JSON.
 
 ### Search scoring
 
-Each hit carries a `score` in `[0, 1]` — a per-word average of how
+Each hit carries a `score` in `[0, 1]` - a per-word average of how
 strongly the query matched the entry. Exact tool-name or ref matches
 contribute `1.0`, prefix matches `0.7`, tag matches `0.35`, summary
 matches `0.2`. A word that does not match contributes 0 to the score
@@ -175,14 +175,14 @@ the unmatched terms. If **no** word matches anywhere, `hits` is empty
 and no warning is emitted.
 
 ### Notifications (HTTP)
-- `GET /mcp` (Accept: text/event-stream) — server pushes `notifications/message`.
+- `GET /mcp` (Accept: text/event-stream) - server pushes `notifications/message`.
 - `data` envelope contains `{source: <server>, payload: <raw>}`.
 - Requires `capabilities.logging` (advertised by proxy).
 - Session must be authenticated.
 
 ## Operations
-- **SIGHUP** — reload config from disk. Transactional: new config is published only after the broker reconciles.
-- **SIGTERM/SIGINT** — graceful shutdown. Kills process groups (`Setpgid`).
+- **SIGHUP** - reload config from disk. Transactional: new config is published only after the broker reconciles.
+- **SIGTERM/SIGINT** - graceful shutdown. Kills process groups (`Setpgid`).
 - **Systemd:** runs as `Type=simple`, uses `ExecReload=/bin/kill -HUP $MAINPID`.
 
 ## Development

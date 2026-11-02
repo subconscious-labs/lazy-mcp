@@ -153,7 +153,7 @@ func TestRun_Initialize(t *testing.T) {
 		t.Fatalf("capabilities.tools missing")
 	}
 	if _, ok := caps["logging"]; !ok {
-		t.Fatalf("capabilities.logging missing — clients may drop notifications/message")
+		t.Fatalf("capabilities.logging missing - clients may drop notifications/message")
 	}
 	if _, ok := result["serverInfo"]; !ok {
 		t.Fatalf("serverInfo missing")
@@ -485,7 +485,7 @@ func TestRun_ParseError(t *testing.T) {
 
 func TestRun_LargeIntegerID(t *testing.T) {
 	srv := testServer(t, "meta", nil)
-	// 2^53 + 1 — число, которое float64 не представляет точно.
+	// 2^53 + 1 - число, которое float64 не представляет точно.
 	// Проверяем, что сервер возвращает ID в точности как получил.
 	raws := runOnceRaw(t, srv,
 		`{"jsonrpc":"2.0","id":9007199254740993,"method":"ping"}`)

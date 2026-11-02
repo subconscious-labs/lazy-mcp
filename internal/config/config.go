@@ -11,9 +11,9 @@ import (
 // ProxyConfig holds proxy-level tunables.
 type ProxyConfig struct {
 	// Transport selects which frontend(s) to run:
-	//   "stdio" — subprocess of an MCP client (chatd-style bridge).
-	//   "http"  — standalone daemon behind proxy.http.addr.
-	//   "both"  — both; stops when stdio EOFs (migration mode).
+	//   "stdio" - subprocess of an MCP client (chatd-style bridge).
+	//   "http"  - standalone daemon behind proxy.http.addr.
+	//   "both"  - both; stops when stdio EOFs (migration mode).
 	// Empty auto-picks: http if proxy.http.addr is set, stdio otherwise.
 	Transport        string        `yaml:"transport"`
 	HTTP             HTTPConfig    `yaml:"http"`

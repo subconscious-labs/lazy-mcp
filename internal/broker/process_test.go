@@ -14,10 +14,10 @@ import (
 )
 
 // TestStop_KillsChildren проверяет, что Stop убивает не только лидера
-// subprocess'а, но и его детей. Лидер здесь — обычный shell, который
+// subprocess'а, но и его детей. Лидер здесь - обычный shell, который
 // запускает sleep и сразу завершается, оставляя sleep сиротой.
 func TestStop_KillsChildren(t *testing.T) {
-	// sh -c '<marker>; sleep 600' — sh запишет маркер в файл, запустит
+	// sh -c '<marker>; sleep 600' - sh запишет маркер в файл, запустит
 	// sleep, и (из-за exec) заменится на sleep. Значит sleep станет
 	// лидером группы. Чтобы получить именно «лидер вышел, ребёнок жив»,
 	// используем подshell: sh -c 'sh -c "sleep 600" ; exit 0'.

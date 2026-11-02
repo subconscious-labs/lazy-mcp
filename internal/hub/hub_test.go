@@ -507,10 +507,10 @@ func TestRefreshSessionsAfterReload_Revokes(t *testing.T) {
 	h.cfg.Swap(newCfg)
 	h.RefreshSessionsAfterReload()
 
-	// Broadcast from secret — alice must NOT receive it.
+	// Broadcast from secret - alice must NOT receive it.
 	h.OnDownstreamNotification("secret", "notifications/message",
 		json.RawMessage(`{"level":"info","data":"secret payload"}`))
-	// Broadcast from public — alice MUST receive it.
+	// Broadcast from public - alice MUST receive it.
 	h.OnDownstreamNotification("public", "notifications/message",
 		json.RawMessage(`{"level":"info","data":"public payload"}`))
 

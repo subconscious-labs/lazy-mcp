@@ -287,7 +287,7 @@ func (h *Handlers) buildResponse(raw string, pageSize int, user, server, tool st
 	}
 	if autoPaged {
 		out.Hint = fmt.Sprintf(
-			"result exceeds max_result_bytes (%d); paginated automatically — pass next_cursor to continue",
+			"result exceeds max_result_bytes (%d); paginated automatically - pass next_cursor to continue",
 			maxBytes)
 	}
 	b, err := json.MarshalIndent(out, "", "  ")

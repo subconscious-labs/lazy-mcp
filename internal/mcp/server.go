@@ -228,7 +228,7 @@ func (s *Server) toolManifest(prefix string) []map[string]any {
 	return []map[string]any{
 		{
 			"name":        prefix + "_search",
-			"description": "Search for tools across all registered MCP backends. Returns {hits, total, has_more, warnings?}. Each hit carries `score` in [0,1]: a higher score means the entry matched the query more strongly. A query word that matches nothing produces a warning instead of dropping the whole query — check warnings when hits look weak. warnings also appear when a query term matches an enabled server's metadata but that server has no tools indexed.",
+			"description": "Search for tools across all registered MCP backends. Returns {hits, total, has_more, warnings?}. Each hit carries `score` in [0,1]: a higher score means the entry matched the query more strongly. A query word that matches nothing produces a warning instead of dropping the whole query - check warnings when hits look weak. warnings also appear when a query term matches an enabled server's metadata but that server has no tools indexed.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -272,7 +272,7 @@ func (s *Server) toolManifest(prefix string) []map[string]any {
 		},
 		{
 			"name":        prefix + "_list_servers",
-			"description": "List MCP backend servers with runtime status. Each entry has {state, transport, running, circuit, last_tool_call?, last_error?}. state is the authoritative health signal: 'running' (stdio backend, process alive), 'initialized' (HTTP backend, session cached — will be verified on the next call), 'reaped' (was running, stopped by idle_ttl; next call restarts it), 'errored' (circuit open/half-open, or process gone), 'never_started', 'disabled'. For HTTP backends running:true means we have not seen a 404 since the last successful initialize; it is not a live probe. By default only enabled servers are shown; pass include_disabled:true to see the full registry.",
+			"description": "List MCP backend servers with runtime status. Each entry has {state, transport, running, circuit, last_tool_call?, last_error?}. state is the authoritative health signal: 'running' (stdio backend, process alive), 'initialized' (HTTP backend, session cached - will be verified on the next call), 'reaped' (was running, stopped by idle_ttl; next call restarts it), 'errored' (circuit open/half-open, or process gone), 'never_started', 'disabled'. For HTTP backends running:true means we have not seen a 404 since the last successful initialize; it is not a live probe. By default only enabled servers are shown; pass include_disabled:true to see the full registry.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{

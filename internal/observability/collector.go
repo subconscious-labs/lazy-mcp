@@ -196,12 +196,12 @@ func (c *Collector) Render() []byte {
 
 	var b strings.Builder
 
-	// lazy_mcp_info — always present, serves as a heartbeat.
+	// lazy_mcp_info - always present, serves as a heartbeat.
 	help(&b, "lazy_mcp_info", "Build information.")
 	typ(&b, "lazy_mcp_info", "gauge")
 	fmt.Fprintf(&b, "lazy_mcp_info{version=\"%s\"} 1\n", escapeLabel(Version))
 
-	// Hub metrics — always emitted, so the series exist even before
+	// Hub metrics - always emitted, so the series exist even before
 	// the first request (alerts on missing series fail otherwise).
 	help(&b, "lazy_mcp_sessions_active", "Currently open HTTP sessions.")
 	typ(&b, "lazy_mcp_sessions_active", "gauge")
@@ -336,7 +336,7 @@ func (c *Collector) WriteFile(path string) error {
 	}
 	// CreateTemp uses 0600. The .prom file must be readable by the
 	// node_exporter process, which runs under a different user. Chmod
-	// before close so the renamed file already has the correct mode —
+	// before close so the renamed file already has the correct mode -
 	// no window where the target is 0600.
 	if err := tmp.Chmod(0o644); err != nil {
 		_ = tmp.Close()

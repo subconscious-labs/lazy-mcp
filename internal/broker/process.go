@@ -156,7 +156,7 @@ func (p *backendProcess) start(ctx context.Context) error {
 
 	p.mu.Lock()
 	p.current = run
-	// NOTE: lastToolCall is intentionally NOT touched here — it must
+	// NOTE: lastToolCall is intentionally NOT touched here - it must
 	// reflect tools/call only, not process starts.
 	p.startedAt = time.Now()
 	p.mu.Unlock()
